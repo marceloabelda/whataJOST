@@ -4,8 +4,8 @@ Whaturi is a whatsapp webview client built with [Tauri](https://v2.tauri.app/).
 
 ## TODO
 
-- [ ] System tray
-- [ ] Performance
+- [x] System tray
+- [x] Performance
 - [ ] Auto Startup
 
 ## Installation
