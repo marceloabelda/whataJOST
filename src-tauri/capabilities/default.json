@@ -4,10 +4,6 @@
   "description": "Capability for the main window",
   "windows": ["main"],
   "permissions": [
-    "core:default",
-    "opener:default",
-    "core:webview:allow-create-webview-window",
-    "core:window:allow-close",
-    "core:tray:default"
+    "core:default"
   ]
 }
