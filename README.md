@@ -14,6 +14,7 @@ es un fork de https://github.com/jude7733/whatauri
 - [x] Abrir links externos en el browser del sistema
 - [x] User agent Chrome (carga la versión completa de WhatsApp Web)
 - [x] Carga en segundo plano (sin pantalla en blanco al abrir)
+- [ ] Descargar archivos (PDF, imagenes.. etc)
 - [ ] Auto Startup
 - [ ] Atajo de teclado global (mostrar/ocultar ventana)
 - [ ] Recordar tamaño y posición de ventana
