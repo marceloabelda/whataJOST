@@ -11,10 +11,12 @@ es un fork de https://github.com/jude7733/whatauri
 - [x] System tray
 - [x] Performance
 - [x] Single instance (una sola ventana abierta a la vez)
+- [x] Abrir links externos en el browser del sistema
+- [x] User agent Chrome (carga la versión completa de WhatsApp Web)
+- [x] Carga en segundo plano (sin pantalla en blanco al abrir)
 - [ ] Auto Startup
 - [ ] Atajo de teclado global (mostrar/ocultar ventana)
 - [ ] Recordar tamaño y posición de ventana
-- [x] Abrir links externos en el browser del sistema
 - [ ] Notificaciones nativas de escritorio
 - [ ] Badge con mensajes sin leer en el tray
 - [ ] Múltiples cuentas
