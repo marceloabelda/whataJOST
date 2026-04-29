@@ -4,10 +4,12 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_opener::OpenerExt;
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             if let Some(window) = app.get_webview_window("whatsapp-web") {
                 let _ = window.show();
@@ -16,6 +18,7 @@ pub fn run() {
         }))
         .invoke_handler(tauri::generate_handler![])
         .setup(|app| {
+            let app_handle = app.handle().clone();
             let whatsapp_window = WebviewWindowBuilder::new(
                 app,
                 "whatsapp-web",
@@ -24,6 +27,47 @@ pub fn run() {
             .title("WhatsApp Web")
             .inner_size(1280.0, 800.0)
             .focused(true)
+            .on_navigation(move |url| {
+                let host = url.host_str().unwrap_or("");
+                let is_whatsapp = host.ends_with("whatsapp.com")
+                    || host.ends_with("whatsapp.net")
+                    || host.ends_with("facebook.com")
+                    || host.ends_with("fbcdn.net");
+                if is_whatsapp {
+                    true
+                } else {
+                    let _ = app_handle.opener().open_url(url.as_str(), None::<&str>);
+                    false
+                }
+            })
+            .initialization_script(r#"
+                (function() {
+                    const isWhatsApp = (url) =>
+                        /whatsapp\.(com|net)|facebook\.com|fbcdn\.net/.test(new URL(url).hostname);
+
+                    window.open = function(url) {
+                        if (url) try {
+                            if (!isWhatsApp(url)) { window.location.href = url; return null; }
+                        } catch(_) {}
+                        return null;
+                    };
+
+                    document.addEventListener('click', function(e) {
+                        for (const node of e.composedPath()) {
+                            if (node.tagName === 'A' && node.href) {
+                                try {
+                                    if (!isWhatsApp(node.href)) {
+                                        e.preventDefault();
+                                        e.stopImmediatePropagation();
+                                        window.location.href = node.href;
+                                    }
+                                } catch(_) {}
+                                break;
+                            }
+                        }
+                    }, true);
+                })();
+            "#)
             .build()?;
 
             let win = whatsapp_window.clone();
