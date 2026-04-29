@@ -1,6 +1,6 @@
 [package]
 name = "whatajost"
-version = "1.1.1"
+version = "1.1.2"
 description = "WhatsApp Web wrapper with tauri"
 authors = ["jude7733"]
 edition = "2021"
@@ -16,6 +16,7 @@ tauri-build = { version = "2", features = [] }
 
 [dependencies]
 tauri = { version = "2", features = ["image-png", "tray-icon"] }
+tauri-plugin-single-instance = "2"
 
 [profile.release]
 opt-level = 3
