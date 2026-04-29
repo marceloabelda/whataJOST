@@ -67,37 +67,50 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 }
             }, true);
 
-            // Fix image paste en WebKitGTK: sobreescribir navigator.clipboard.read()
-            // que es la API real que usa WhatsApp Web (los eventos sintéticos tienen
-            // isTrusted=false y WhatsApp los ignora).
-            // Usa IPC si está disponible, sino usa window.__tauriClipboardImage
-            // que Rust inyecta vía eval() como fallback.
-            function __makeClipboardItems(b64) {
-                var bin = atob(b64);
-                var arr = new Uint8Array(bin.length);
-                for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-                var blob = new Blob([arr], { type: 'image/png' });
-                return [{ types: ['image/png'], getType: function(t) {
-                    return t === 'image/png' ? Promise.resolve(blob) : Promise.reject(new Error('not found'));
-                }}];
-            }
+            // Interceptar evento paste para pegar imágenes desde el portapapeles del sistema
+            document.addEventListener('paste', async function(e) {
+                // Si el evento ya trae archivos, no interferir
+                if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+                    return;
+                }
 
-            if (navigator.clipboard) {
-                navigator.clipboard.read = async function() {
-                    // Vía IPC
-                    if (window.__TAURI_INTERNALS__) {
-                        try {
-                            var b64 = await window.__TAURI_INTERNALS__.invoke('read_clipboard_image');
-                            if (b64) return __makeClipboardItems(b64);
-                        } catch(e) {}
-                    }
-                    // Fallback: dato inyectado por Rust vía eval
-                    if (window.__tauriClipboardImage) {
-                        return __makeClipboardItems(window.__tauriClipboardImage);
-                    }
-                    return [];
-                };
-            }
+                // Obtener imagen del portapapeles via IPC o variable inyectada por Rust
+                let b64 = null;
+                if (window.__TAURI_INTERNALS__) {
+                    try {
+                        b64 = await window.__TAURI_INTERNALS__.invoke('read_clipboard_image');
+                    } catch(err) {}
+                }
+                if (!b64 && window.__tauriClipboardImage) {
+                    b64 = window.__tauriClipboardImage;
+                }
+                if (!b64) return; // no hay imagen en el portapapeles
+
+                e.preventDefault();
+                e.stopPropagation();
+
+                // Convertir base64 a File
+                const binary = atob(b64);
+                const array = new Uint8Array(binary.length);
+                for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
+                const blob = new Blob([array], { type: 'image/png' });
+                const file = new File([blob], 'clipboard.png', { type: 'image/png' });
+
+                // Buscar el input[type=file] de WhatsApp y asignarle el archivo
+                const inputs = document.querySelectorAll('input[type="file"]');
+                if (inputs.length === 0) return;
+
+                // Tomar el primer input file (WhatsApp suele tener uno solo)
+                const input = inputs[0];
+
+                // Crear DataTransfer y asignar al input (sobrescribiendo la propiedad files)
+                const dt = new DataTransfer();
+                dt.items.add(file);
+                Object.defineProperty(input, 'files', { value: dt.files });
+
+                // Disparar evento change para que WhatsApp procese el archivo
+                input.dispatchEvent(new Event('change', { bubbles: true }));
+            }, true);
 
             // Intercept Notification API to show in-app toast
             const _OrigNotification = window.Notification;
@@ -131,30 +144,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         }
     });
 
-    // Hilo que monitorea el clipboard y empuja la imagen a JS vía eval()
-    // para cuando el IPC desde URL externa no está disponible.
-    let win_clip = window.clone();
-    std::thread::spawn(move || {
-        let mut last_len: usize = 0;
-        loop {
-            std::thread::sleep(Duration::from_millis(800));
-            if !win_clip.is_visible().unwrap_or(false) {
-                continue;
-            }
-            match read_clipboard_image() {
-                Some(b64) if b64.len() != last_len => {
-                    last_len = b64.len();
-                    let js = format!("window.__tauriClipboardImage = '{}';", b64);
-                    let _ = win_clip.eval(&js);
-                }
-                None if last_len != 0 => {
-                    last_len = 0;
-                    let _ = win_clip.eval("window.__tauriClipboardImage = null;");
-                }
-                _ => {}
-            }
-        }
-    });
+    
 
     Ok(())
 }
@@ -289,6 +279,7 @@ fn open_whatsapp(app: AppHandle) {
 pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app);
         }))
