@@ -1,6 +1,10 @@
-# Whaturi
+# WhataJOST
 
-Whaturi is a whatsapp webview client built with [Tauri](https://v2.tauri.app/).
+WhataJOST is a whatsapp webview client built with [Tauri](https://v2.tauri.app/).
+
+es un fork de https://github.com/jude7733/whatauri
+
+
 
 ## TODO
 
@@ -10,15 +14,10 @@ Whaturi is a whatsapp webview client built with [Tauri](https://v2.tauri.app/).
 
 ## Installation
 
-### Arch Linux
-
-```bash
-yay -S whaturi-git
-```
 
 ### Debian / Fedora
 
-Download and install builds from [releases](https://github.com/jude7733/whatauri/releases) page.
+
 
 ## Icon
 
