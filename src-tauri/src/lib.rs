@@ -1,3 +1,5 @@
+use std::time::Duration;
+
 use tauri::{
     image::Image,
     menu::{Menu, MenuEvent, MenuItem},
@@ -64,6 +66,27 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                     }
                 }
             }, true);
+
+            // Intercept Notification API to show in-app toast
+            const _OrigNotification = window.Notification;
+            window.Notification = function(title, options) {
+                try {
+                    window.__TAURI_INTERNALS__.invoke('show_notification', {
+                        title: title || '',
+                        body: (options && options.body) ? options.body : ''
+                    });
+                } catch(e) {
+                    console.warn('[whataJOST] notification invoke failed:', e);
+                }
+            };
+            window.Notification.permission = 'granted';
+            window.Notification.requestPermission = function() {
+                return Promise.resolve('granted');
+            };
+            Object.defineProperty(window.Notification, 'permission', {
+                get: () => 'granted',
+                configurable: true
+            });
         })();
     "#)
     .build()?;
@@ -79,6 +102,94 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
+                out.push(byte as char);
+            }
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
+                out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+            }
+        }
+    }
+    out
+}
+
+#[tauri::command]
+fn show_notification(app: AppHandle, title: String, body: String) {
+    // Close any existing notification first
+    if let Some(existing) = app.get_webview_window("notification") {
+        let _ = existing.close();
+    }
+
+    let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let pos = monitor.position();
+        let logical_w = size.width as f64 / scale;
+        let logical_h = size.height as f64 / scale;
+        let notif_w = 360.0f64;
+        let notif_h = 100.0f64;
+        let margin = 16.0f64;
+        (
+            pos.x as f64 / scale + logical_w - notif_w - margin,
+            pos.y as f64 / scale + logical_h - notif_h - margin,
+        )
+    } else {
+        return;
+    };
+
+    let path = format!(
+        "notification.html?t={}&b={}",
+        url_encode(&title),
+        url_encode(&body)
+    );
+
+    let result = WebviewWindowBuilder::new(
+        &app,
+        "notification",
+        WebviewUrl::App(path.into()),
+    )
+    .title("")
+    .decorations(false)
+    .transparent(true)
+    .always_on_top(true)
+    .skip_taskbar(true)
+    .resizable(false)
+    .inner_size(360.0, 100.0)
+    .position(x, y)
+    .focused(false)
+    .build();
+
+    if let Ok(win) = result {
+        let win_clone = win.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5500));
+            let _ = win_clone.close();
+        });
+    }
+}
+
+#[tauri::command]
+fn close_notification(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("notification") {
+        let _ = win.close();
+    }
+}
+
+#[tauri::command]
+fn open_whatsapp(app: AppHandle) {
+    show_window(&app);
+    if let Some(win) = app.get_webview_window("notification") {
+        let _ = win.close();
+    }
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -86,7 +197,11 @@ pub fn run() {
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app);
         }))
-        .invoke_handler(tauri::generate_handler![])
+        .invoke_handler(tauri::generate_handler![
+            show_notification,
+            close_notification,
+            open_whatsapp
+        ])
         .setup(|app| {
             create_whatsapp_window(app.handle())?;
 

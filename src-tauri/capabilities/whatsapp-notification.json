@@ -1,0 +1,15 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "whatsapp-notification",
+  "description": "Allow WhatsApp Web webview to invoke notification commands via IPC",
+  "windows": ["whatsapp-web"],
+  "remote": {
+    "urls": [
+      "https://*.whatsapp.com/*",
+      "https://*.whatsapp.net/*"
+    ]
+  },
+  "permissions": [
+    "core:default"
+  ]
+}

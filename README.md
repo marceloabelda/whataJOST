@@ -17,7 +17,7 @@ es un fork de https://github.com/jude7733/whatauri
 - [ ] Auto Startup
 - [ ] Atajo de teclado global (mostrar/ocultar ventana)
 - [ ] Recordar tamaño y posición de ventana
-- [ ] Notificaciones nativas de escritorio
+- [x] Notificaciones in-app al recibir mensajes (toast estilo Telegram con nombre y preview)
 - [ ] Badge con mensajes sin leer en el tray
 - [ ] Múltiples cuentas
 - [ ] Zoom configurable

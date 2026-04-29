@@ -1,0 +1,9 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "notification-window",
+  "description": "Allow the notification popup window to invoke commands",
+  "windows": ["notification"],
+  "permissions": [
+    "core:default"
+  ]
+}
