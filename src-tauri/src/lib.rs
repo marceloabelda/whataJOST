@@ -96,20 +96,29 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 const blob = new Blob([array], { type: 'image/png' });
                 const file = new File([blob], 'clipboard.png', { type: 'image/png' });
 
-                // Buscar el input[type=file] de WhatsApp y asignarle el archivo
-                const inputs = document.querySelectorAll('input[type="file"]');
-                if (inputs.length === 0) return;
-
-                // Tomar el primer input file (WhatsApp suele tener uno solo)
-                const input = inputs[0];
-
-                // Crear DataTransfer y asignar al input (sobrescribiendo la propiedad files)
+                // Crear DataTransfer con el archivo y despachar un paste sintético.
+                // Así WhatsApp Web lo procesa como imagen normal (no como sticker,
+                // que es lo que ocurre al inyectar vía <input type="file"> + change).
                 const dt = new DataTransfer();
                 dt.items.add(file);
-                Object.defineProperty(input, 'files', { value: dt.files });
 
-                // Disparar evento change para que WhatsApp procese el archivo
-                input.dispatchEvent(new Event('change', { bubbles: true }));
+                let pasteEvent;
+                try {
+                    pasteEvent = new ClipboardEvent('paste', {
+                        bubbles: true,
+                        cancelable: true,
+                        clipboardData: dt
+                    });
+                } catch(_) {
+                    pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+                    Object.defineProperty(pasteEvent, 'clipboardData', {
+                        get: function() { return dt; },
+                        configurable: true
+                    });
+                }
+
+                const target = document.activeElement || document.body;
+                target.dispatchEvent(pasteEvent);
             }, true);
 
             // Intercept Notification API to show in-app toast
