@@ -23,7 +23,9 @@ es un fork de https://github.com/jude7733/whatauri
 - [ ] Zoom configurable
 - [ ] Modo no molestar
 - [ ] Actualización automática
-- [ ] Click en tray icon, siempre tiene que traer la app a primer plano
+- [ ] Click en tray icon, siempre trae la app a primer plano
+- [ ] Agregar el el tray, Minimize to tray
+
 
 ## Installation
 
