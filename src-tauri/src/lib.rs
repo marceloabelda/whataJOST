@@ -67,6 +67,38 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 }
             }, true);
 
+            // Fix image paste en WebKitGTK: sobreescribir navigator.clipboard.read()
+            // que es la API real que usa WhatsApp Web (los eventos sintéticos tienen
+            // isTrusted=false y WhatsApp los ignora).
+            // Usa IPC si está disponible, sino usa window.__tauriClipboardImage
+            // que Rust inyecta vía eval() como fallback.
+            function __makeClipboardItems(b64) {
+                var bin = atob(b64);
+                var arr = new Uint8Array(bin.length);
+                for (var i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                var blob = new Blob([arr], { type: 'image/png' });
+                return [{ types: ['image/png'], getType: function(t) {
+                    return t === 'image/png' ? Promise.resolve(blob) : Promise.reject(new Error('not found'));
+                }}];
+            }
+
+            if (navigator.clipboard) {
+                navigator.clipboard.read = async function() {
+                    // Vía IPC
+                    if (window.__TAURI_INTERNALS__) {
+                        try {
+                            var b64 = await window.__TAURI_INTERNALS__.invoke('read_clipboard_image');
+                            if (b64) return __makeClipboardItems(b64);
+                        } catch(e) {}
+                    }
+                    // Fallback: dato inyectado por Rust vía eval
+                    if (window.__tauriClipboardImage) {
+                        return __makeClipboardItems(window.__tauriClipboardImage);
+                    }
+                    return [];
+                };
+            }
+
             // Intercept Notification API to show in-app toast
             const _OrigNotification = window.Notification;
             window.Notification = function(title, options) {
@@ -91,15 +123,78 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     "#)
     .build()?;
 
-    let win = window.clone();
+    let win_close = window.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
             api.prevent_close();
-            let _ = win.hide();
+            let _ = win_close.hide();
+        }
+    });
+
+    // Hilo que monitorea el clipboard y empuja la imagen a JS vía eval()
+    // para cuando el IPC desde URL externa no está disponible.
+    let win_clip = window.clone();
+    std::thread::spawn(move || {
+        let mut last_len: usize = 0;
+        loop {
+            std::thread::sleep(Duration::from_millis(800));
+            if !win_clip.is_visible().unwrap_or(false) {
+                continue;
+            }
+            match read_clipboard_image() {
+                Some(b64) if b64.len() != last_len => {
+                    last_len = b64.len();
+                    let js = format!("window.__tauriClipboardImage = '{}';", b64);
+                    let _ = win_clip.eval(&js);
+                }
+                None if last_len != 0 => {
+                    last_len = 0;
+                    let _ = win_clip.eval("window.__tauriClipboardImage = null;");
+                }
+                _ => {}
+            }
         }
     });
 
     Ok(())
+}
+
+fn base64_encode_bytes(data: &[u8]) -> String {
+    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
+    for chunk in data.chunks(3) {
+        let n = (chunk[0] as u32) << 16
+            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
+            | (*chunk.get(2).unwrap_or(&0) as u32);
+        out.push(T[(n >> 18 & 63) as usize] as char);
+        out.push(T[(n >> 12 & 63) as usize] as char);
+        out.push(if chunk.len() > 1 { T[(n >> 6 & 63) as usize] as char } else { '=' });
+        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
+    }
+    out
+}
+
+#[tauri::command]
+fn read_clipboard_image() -> Option<String> {
+    // Wayland
+    if let Ok(out) = std::process::Command::new("wl-paste")
+        .args(["--type", "image/png", "--no-newline"])
+        .output()
+    {
+        if out.status.success() && !out.stdout.is_empty() {
+            return Some(base64_encode_bytes(&out.stdout));
+        }
+    }
+    // X11
+    if let Ok(out) = std::process::Command::new("xclip")
+        .args(["-selection", "clipboard", "-t", "image/png", "-o"])
+        .output()
+    {
+        if out.status.success() && !out.stdout.is_empty() {
+            return Some(base64_encode_bytes(&out.stdout));
+        }
+    }
+    None
 }
 
 fn url_encode(s: &str) -> String {
@@ -200,7 +295,8 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             show_notification,
             close_notification,
-            open_whatsapp
+            open_whatsapp,
+            read_clipboard_image
         ])
         .setup(|app| {
             create_whatsapp_window(app.handle())?;
