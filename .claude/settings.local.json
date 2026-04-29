@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.rs)",
+      "WebFetch(domain:v2.tauri.app)",
+      "Bash(npx tauri *)",
+      "Bash(cargo build *)",
+      "Bash(chmod +x *)"
+    ]
+  }
+}

@@ -7,6 +7,8 @@ use tauri::{
     AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
+use tauri_plugin_updater::UpdaterExt;
+use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("whatsapp-web") {
@@ -289,6 +291,8 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_updater::Builder::new().build())
+        .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app);
         }))
@@ -341,6 +345,53 @@ pub fn run() {
                 .build(app)?;
 
             app.manage(tray);
+
+            // Check for updates in background after app starts
+            let handle = app.handle().clone();
+            std::thread::spawn(move || {
+                std::thread::sleep(Duration::from_secs(5));
+
+                tauri::async_runtime::block_on(async {
+                    let updater = match handle.updater() {
+                        Ok(u) => u,
+                        Err(e) => {
+                            eprintln!("[whataJOST] updater error: {e}");
+                            return;
+                        }
+                    };
+
+                    let update = match updater.check().await {
+                        Ok(Some(u)) => u,
+                        Ok(None) => return,
+                        Err(e) => {
+                            eprintln!("[whataJOST] update check error: {e}");
+                            return;
+                        }
+                    };
+
+                    let version = update.version.clone();
+
+                    handle
+                        .dialog()
+                        .message(format!(
+                            "Nueva versión disponible: {version}\n\n¿Querés actualizar ahora?"
+                        ))
+                        .title("whataJOST - Actualización")
+                        .kind(MessageDialogKind::Info)
+                        .buttons(MessageDialogButtons::OkCancel)
+                        .show(move |result| {
+                            if result {
+                                tauri::async_runtime::spawn(async move {
+                                    if let Err(e) =
+                                        update.download_and_install(|_, _| {}, || {}).await
+                                    {
+                                        eprintln!("[whataJOST] update install error: {e}");
+                                    }
+                                });
+                            }
+                        });
+                });
+            });
 
             Ok(())
         })
