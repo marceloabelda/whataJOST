@@ -23,7 +23,7 @@ dist-ssr
 *.njsproj
 *.sln
 *.sw?
-
+.env
 # Tauri updater signing keys
 src-tauri/updater_key
 src-tauri/updater_key.pub
