@@ -18,19 +18,25 @@ fn show_window(app: &AppHandle) {
 }
 
 fn check_for_updates(app: &AppHandle) {
+    check_for_updates_impl(app, false);
+}
+
+fn check_for_updates_impl(app: &AppHandle, silent: bool) {
     let handle = app.clone();
     std::thread::spawn(move || {
         tauri::async_runtime::block_on(async {
             let updater = match handle.updater() {
                 Ok(u) => u,
                 Err(e) => {
-                    handle
-                        .dialog()
-                        .message(format!("Error al iniciar el updater: {e}"))
-                        .title("whataJOST")
-                        .kind(MessageDialogKind::Error)
-                        .buttons(MessageDialogButtons::Ok)
-                        .show(|_| {});
+                    if !silent {
+                        handle
+                            .dialog()
+                            .message(format!("Error al iniciar el updater: {e}"))
+                            .title("whataJOST")
+                            .kind(MessageDialogKind::Error)
+                            .buttons(MessageDialogButtons::Ok)
+                            .show(|_| {});
+                    }
                     return;
                 }
             };
@@ -38,23 +44,27 @@ fn check_for_updates(app: &AppHandle) {
             let update = match updater.check().await {
                 Ok(Some(u)) => u,
                 Ok(None) => {
-                    handle
-                        .dialog()
-                        .message("Ya tenés la última versión.")
-                        .title("whataJOST")
-                        .kind(MessageDialogKind::Info)
-                        .buttons(MessageDialogButtons::Ok)
-                        .show(|_| {});
+                    if !silent {
+                        handle
+                            .dialog()
+                            .message("Ya tenés la última versión.")
+                            .title("whataJOST")
+                            .kind(MessageDialogKind::Info)
+                            .buttons(MessageDialogButtons::Ok)
+                            .show(|_| {});
+                    }
                     return;
                 }
                 Err(e) => {
-                    handle
-                        .dialog()
-                        .message(format!("Error al buscar actualizaciones: {e}"))
-                        .title("whataJOST")
-                        .kind(MessageDialogKind::Error)
-                        .buttons(MessageDialogButtons::Ok)
-                        .show(|_| {});
+                    if !silent {
+                        handle
+                            .dialog()
+                            .message(format!("Error al buscar actualizaciones: {e}"))
+                            .title("whataJOST")
+                            .kind(MessageDialogKind::Error)
+                            .buttons(MessageDialogButtons::Ok)
+                            .show(|_| {});
+                    }
                     return;
                 }
             };
@@ -477,7 +487,7 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(5));
-                check_for_updates(&handle);
+                check_for_updates_impl(&handle, true);
             });
 
             Ok(())
