@@ -35,10 +35,10 @@
     "createUpdaterArtifacts": true,
     "linux": {
       "deb": {
-        "depends": ["xclip", "wl-clipboard", "policykit-1"]
+        "depends": ["xclip", "wl-clipboard"]
       },
       "rpm": {
-        "depends": ["xclip", "wl-clipboard", "policykit-1"]
+        "depends": ["xclip", "wl-clipboard"]
       }
     }
   },
