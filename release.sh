@@ -52,8 +52,9 @@ git commit -m "Release v${VERSION}"
 # Crear tag
 git tag "v${VERSION}" -m "Release v${VERSION}"
 
-# Setear clave privada para firmar los bundles
+# Setear claves para firmar los bundles
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
+export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
 echo "🔨 Buildenado la app..."
 npx tauri build 2>&1
