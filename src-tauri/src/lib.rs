@@ -24,7 +24,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         "whatsapp-web",
         WebviewUrl::External("https://web.whatsapp.com/".parse().unwrap()),
     )
-    .title("WhataJOST")
+    .title(format!("WhataJOST v{}", env!("CARGO_PKG_VERSION")))
     .inner_size(1280.0, 800.0)
     .visible(false)
     .focused(false)

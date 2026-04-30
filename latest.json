@@ -1,11 +1,16 @@
 {
-  "version": "v1.1.9",
-  "notes": "Release v1.1.9",
-  "pub_date": "2026-04-30T00:15:41Z",
+  "version": "v1.1.10",
+  "notes": "Release v1.1.10",
+  "pub_date": "2026-04-30T00:19:52Z",
   "platforms": {
     "linux-x86_64": {
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUM0gwYnFncFp5cDdBWGdiQ3dEWURLMnBLVzdsUDV1WGZrdlZuZS9zUUN1cmRoVU1RMEltTUQ2K1RvWFZkOHBFL3VZeWNrTWNLM3RTSzVGZk1yYmxLcjZXUjZEZk9qNHdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3NTA4MzkyCWZpbGU6d2hhdGFKT1NUXzEuMS4xMF9hbWQ2NC5kZWIKYndSOTV1RzRCWjhNVloxTzNKK2RQbWdWREJ5OSswamhLZWs2R2FhYUxDb3lCV0haYlN1OVdneS9jZFhNdndTZGs4M01CWlJWY0ZzVGtkNHlUbTc4Qmc9PQo=",
+      "url": "https://github.com/marceloabelda/whataJOST/releases/download/v1.1.10/whataJOST_1.1.10_amd64.deb"
+    }
+    ,
+    "linux-x86_64": {
       "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUM0gwYnFncFp5cDF6dlJWR200THljUm92eVE3Skc5ZUJJOWFiODBuUUlmTFRtcDd3ZWN6aUYxdjZHa3FXenJGUkJ6UDNla2JWSHVLcVkrZjhWa1IyQkp1Vk5KM0VCTmdjPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc3NTA4MTQxCWZpbGU6d2hhdGFKT1NUXzEuMS45X2FtZDY0LmRlYgp1NDRnVWJHN3Y5VHFVUStvdWd5WUxYQ1VqbFJJZTQ0QWtYcC9kdUJRN3p6T05PemhIMGNrc2JoNnVaUFc4MlRmbjRSU3VMNHhrVXBZZTlJM1NDUVpDZz09Cg==",
-      "url": "https://github.com/marceloabelda/whataJOST/releases/download/v1.1.9/whataJOST_1.1.9_amd64.deb"
+      "url": "https://github.com/marceloabelda/whataJOST/releases/download/v1.1.10/whataJOST_1.1.9_amd64.deb"
     }
   }
 }
