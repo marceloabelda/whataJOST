@@ -6,7 +6,11 @@
       "WebFetch(domain:v2.tauri.app)",
       "Bash(npx tauri *)",
       "Bash(cargo build *)",
-      "Bash(chmod +x *)"
+      "Bash(chmod +x *)",
+      "Bash(curl -s \"https://github.com/marceloabelda/whataJOST/releases/latest/download/latest.json\")",
+      "Bash(curl -sv \"https://github.com/marceloabelda/whataJOST/releases/latest/download/latest.json\")",
+      "Bash(gh release *)",
+      "Bash(curl *)"
     ]
   }
 }

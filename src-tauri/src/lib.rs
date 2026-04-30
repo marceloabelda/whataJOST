@@ -381,11 +381,23 @@ pub fn run() {
                         .buttons(MessageDialogButtons::OkCancel)
                         .show(move |result| {
                             if result {
+                                let h = handle.clone();
                                 tauri::async_runtime::spawn(async move {
-                                    if let Err(e) =
-                                        update.download_and_install(|_, _| {}, || {}).await
-                                    {
-                                        eprintln!("[whataJOST] update install error: {e}");
+                                    match update.download_and_install(|_, _| {}, || {}).await {
+                                        Err(e) => {
+                                            h.dialog()
+                                                .message(format!(
+                                                    "Error al actualizar: {e}"
+                                                ))
+                                                .title("whataJOST - Error")
+                                                .kind(MessageDialogKind::Error)
+                                                .buttons(MessageDialogButtons::Ok)
+                                                .show(|_| {});
+                                        }
+                                        Ok(()) => {
+                                            // La app se relanza automáticamente después
+                                            // de instalar, así que este código no se ejecuta.
+                                        }
                                     }
                                 });
                             }

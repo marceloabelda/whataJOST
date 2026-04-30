@@ -49,6 +49,9 @@ sed -i "s/\"version\": \".*\"/\"version\": \"${VERSION}\"/" src-tauri/tauri.conf
 git add .
 git commit -m "Release v${VERSION}"
 
+# Borrar tag local si ya existe (de un intento fallido anterior)
+git tag -d "v${VERSION}" 2>/dev/null || true
+
 # Crear tag
 git tag "v${VERSION}" -m "Release v${VERSION}"
 
@@ -57,7 +60,12 @@ export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
 echo "🔨 Buildenado la app..."
+# Limpiar builds anteriores para que no se cuelen bundles viejos en el latest.json
+rm -rf src-tauri/target/release/bundle
 npx tauri build 2>&1
+
+echo "📤 Subiendo commit y tag a GitHub..."
+git push origin main "v${VERSION}"
 
 echo "📦 Creando manifiesto de actualización..."
 
@@ -145,8 +153,5 @@ gh release create "v${VERSION}" "${ASSETS[@]}" \
     --title "v${VERSION}" \
     --notes "Release v${VERSION}" \
     --repo marceloabelda/whataJOST
-
-# Pushear rama y tags
-git push origin main --tags
 
 echo "✅ Release v${VERSION} publicada con auto-update."
