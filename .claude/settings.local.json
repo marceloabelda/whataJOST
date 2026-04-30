@@ -10,7 +10,8 @@
       "Bash(curl -s \"https://github.com/marceloabelda/whataJOST/releases/latest/download/latest.json\")",
       "Bash(curl -sv \"https://github.com/marceloabelda/whataJOST/releases/latest/download/latest.json\")",
       "Bash(gh release *)",
-      "Bash(curl *)"
+      "Bash(curl *)",
+      "Bash(git *)"
     ]
   }
 }

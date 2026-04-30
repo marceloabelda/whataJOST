@@ -9,6 +9,7 @@ use tauri::{
 };
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
+use base64::Engine;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 fn show_window(app: &AppHandle) {
@@ -165,6 +166,11 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     .focused(false)
     .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     .on_navigation(move |url| {
+        // Allow blob: and data: URLs (used for file downloads, media, PDFs, etc.)
+        let scheme = url.scheme();
+        if scheme == "blob" || scheme == "data" || scheme == "about" {
+            return true;
+        }
         let host = url.host_str().unwrap_or("");
         let is_whatsapp = host.ends_with("whatsapp.com")
             || host.ends_with("whatsapp.net")
@@ -189,10 +195,39 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 return null;
             };
 
+            // Helper: fetch blob as base64 and invoke save_file
+            const downloadBlob = (url, fileName) => {
+                (async () => {
+                    try {
+                        const response = await fetch(url);
+                        if (!response.ok) throw new Error('fetch failed');
+                        const blob = await response.blob();
+                        const base64 = await new Promise((resolve, reject) => {
+                            const reader = new FileReader();
+                            reader.onload = () => resolve(reader.result.split(',')[1]);
+                            reader.onerror = reject;
+                            reader.readAsDataURL(blob);
+                        });
+                        await window.__TAURI_INTERNALS__.invoke('save_file', {
+                            data: base64,
+                            fileName: fileName || 'archivo'
+                        });
+                    } catch(e) {
+                        console.warn('[whataJOST] download failed:', e);
+                    }
+                })();
+            };
+
             document.addEventListener('click', function(e) {
                 for (const node of e.composedPath()) {
                     if (node.tagName === 'A' && node.href) {
                         try {
+                            if (node.download && node.href.startsWith('blob:')) {
+                                e.preventDefault();
+                                e.stopImmediatePropagation();
+                                downloadBlob(node.href, node.download);
+                                break;
+                            }
                             if (!isWhatsApp(node.href)) {
                                 e.preventDefault();
                                 e.stopImmediatePropagation();
@@ -427,6 +462,26 @@ fn close_notification(app: AppHandle) {
 }
 
 #[tauri::command]
+fn save_file(data: String, file_name: String) -> Result<String, String> {
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(&data)
+        .map_err(|e| format!("Error al decodificar: {e}"))?;
+
+    let path = rfd::FileDialog::new()
+        .set_file_name(&file_name)
+        .save_file();
+
+    match path {
+        Some(p) => {
+            std::fs::write(&p, &bytes)
+                .map_err(|e| format!("Error al guardar: {e}"))?;
+            Ok(p.to_string_lossy().to_string())
+        }
+        None => Err("Cancelado".to_string()),
+    }
+}
+
+#[tauri::command]
 fn open_whatsapp(app: AppHandle) {
     show_window(&app);
     if let Some(win) = app.get_webview_window("notification") {
@@ -448,7 +503,8 @@ pub fn run() {
             show_notification,
             close_notification,
             open_whatsapp,
-            read_clipboard_image
+            read_clipboard_image,
+            save_file
         ])
         .setup(|app| {
             create_whatsapp_window(app.handle())?;
