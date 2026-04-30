@@ -17,6 +17,80 @@ fn show_window(app: &AppHandle) {
     }
 }
 
+fn check_for_updates(app: &AppHandle) {
+    let handle = app.clone();
+    std::thread::spawn(move || {
+        tauri::async_runtime::block_on(async {
+            let updater = match handle.updater() {
+                Ok(u) => u,
+                Err(e) => {
+                    handle
+                        .dialog()
+                        .message(format!("Error al iniciar el updater: {e}"))
+                        .title("whataJOST")
+                        .kind(MessageDialogKind::Error)
+                        .buttons(MessageDialogButtons::Ok)
+                        .show(|_| {});
+                    return;
+                }
+            };
+
+            let update = match updater.check().await {
+                Ok(Some(u)) => u,
+                Ok(None) => {
+                    handle
+                        .dialog()
+                        .message("Ya tenés la última versión.")
+                        .title("whataJOST")
+                        .kind(MessageDialogKind::Info)
+                        .buttons(MessageDialogButtons::Ok)
+                        .show(|_| {});
+                    return;
+                }
+                Err(e) => {
+                    handle
+                        .dialog()
+                        .message(format!("Error al buscar actualizaciones: {e}"))
+                        .title("whataJOST")
+                        .kind(MessageDialogKind::Error)
+                        .buttons(MessageDialogButtons::Ok)
+                        .show(|_| {});
+                    return;
+                }
+            };
+
+            let version = update.version.clone();
+
+            handle
+                .dialog()
+                .message(format!(
+                    "Nueva versión disponible: {version}\n\n¿Querés actualizar ahora?"
+                ))
+                .title("whataJOST - Actualización")
+                .kind(MessageDialogKind::Info)
+                .buttons(MessageDialogButtons::OkCancel)
+                .show(move |result| {
+                    if result {
+                        let h = handle.clone();
+                        tauri::async_runtime::spawn(async move {
+                            match update.download_and_install(|_, _| {}, || {}).await {
+                                Err(e) => {
+                                    h.dialog()
+                                        .message(format!("Error al actualizar: {e}"))
+                                        .title("whataJOST - Error")
+                                        .kind(MessageDialogKind::Error)
+                                        .buttons(MessageDialogButtons::Ok)
+                                        .show(|_| {});
+                                }
+                                Ok(()) => {}
+                            }
+                        });
+                    }
+                });
+        });
+    });
+}
+
 fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     let opener = app.clone();
     let window = WebviewWindowBuilder::new(
@@ -307,8 +381,10 @@ pub fn run() {
 
             let show_item =
                 MenuItem::with_id(app, "show", "Abrir WhatsApp", true, None::<&str>)?;
+            let update_item =
+                MenuItem::with_id(app, "update", "Buscar actualización", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &update_item, &quit_item])?;
 
             let icon = Image::from_bytes(include_bytes!("../../public/tray.png"))?;
 
@@ -320,6 +396,7 @@ pub fn run() {
                 .on_menu_event(|app: &AppHandle, event: MenuEvent| match event.id.as_ref() {
                     "quit" => app.exit(0),
                     "show" => show_window(app),
+                    "update" => check_for_updates(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray: &TrayIcon, event: TrayIconEvent| {
@@ -350,59 +427,7 @@ pub fn run() {
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(5));
-
-                tauri::async_runtime::block_on(async {
-                    let updater = match handle.updater() {
-                        Ok(u) => u,
-                        Err(e) => {
-                            eprintln!("[whataJOST] updater error: {e}");
-                            return;
-                        }
-                    };
-
-                    let update = match updater.check().await {
-                        Ok(Some(u)) => u,
-                        Ok(None) => return,
-                        Err(e) => {
-                            eprintln!("[whataJOST] update check error: {e}");
-                            return;
-                        }
-                    };
-
-                    let version = update.version.clone();
-
-                    handle
-                        .dialog()
-                        .message(format!(
-                            "Nueva versión disponible: {version}\n\n¿Querés actualizar ahora?"
-                        ))
-                        .title("whataJOST - Actualización")
-                        .kind(MessageDialogKind::Info)
-                        .buttons(MessageDialogButtons::OkCancel)
-                        .show(move |result| {
-                            if result {
-                                let h = handle.clone();
-                                tauri::async_runtime::spawn(async move {
-                                    match update.download_and_install(|_, _| {}, || {}).await {
-                                        Err(e) => {
-                                            h.dialog()
-                                                .message(format!(
-                                                    "Error al actualizar: {e}"
-                                                ))
-                                                .title("whataJOST - Error")
-                                                .kind(MessageDialogKind::Error)
-                                                .buttons(MessageDialogButtons::Ok)
-                                                .show(|_| {});
-                                        }
-                                        Ok(()) => {
-                                            // La app se relanza automáticamente después
-                                            // de instalar, así que este código no se ejecuta.
-                                        }
-                                    }
-                                });
-                            }
-                        });
-                });
+                check_for_updates(&handle);
             });
 
             Ok(())
