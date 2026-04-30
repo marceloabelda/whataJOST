@@ -102,17 +102,37 @@ fn check_for_updates(app: &AppHandle) {
                                 return;
                             }
 
-                            // Abrir con el instalador del sistema (pide permisos vía polkit)
-                            if let Err(e) = std::process::Command::new("xdg-open")
+                            // Instalar con pkexec (pide contraseña de sudo)
+                            match std::process::Command::new("pkexec")
+                                .arg("dpkg")
+                                .arg("-i")
                                 .arg(&tmp)
-                                .spawn()
+                                .status()
                             {
-                                h.dialog()
-                                    .message(format!("Error al abrir el instalador: {e}"))
-                                    .title("whataJOST - Error")
-                                    .kind(MessageDialogKind::Error)
-                                    .buttons(MessageDialogButtons::Ok)
-                                    .show(|_| {});
+                                Ok(status) if status.success() => {
+                                    // Actualizado correctamente, reiniciar la app
+                                    h.exit(0);
+                                    // Relanzar (mejor intento, pkexec ya reemplazó el binario)
+                                }
+                                Ok(status) => {
+                                    h.dialog()
+                                        .message(format!(
+                                            "La instalación terminó con código: {}",
+                                            status.code().unwrap_or(-1)
+                                        ))
+                                        .title("whataJOST - Error")
+                                        .kind(MessageDialogKind::Error)
+                                        .buttons(MessageDialogButtons::Ok)
+                                        .show(|_| {});
+                                }
+                                Err(e) => {
+                                    h.dialog()
+                                        .message(format!("Error al instalar: {e}"))
+                                        .title("whataJOST - Error")
+                                        .kind(MessageDialogKind::Error)
+                                        .buttons(MessageDialogButtons::Ok)
+                                        .show(|_| {});
+                                }
                             };
                         });
                     }
