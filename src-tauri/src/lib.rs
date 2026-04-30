@@ -1,3 +1,4 @@
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tauri::{
@@ -309,26 +310,39 @@ fn base64_encode_bytes(data: &[u8]) -> String {
     out
 }
 
+static CLIPBOARD_TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
+
+fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
+    let (cmd, args): (&str, &[&str]) = match tool {
+        "wl-paste" => ("wl-paste", &["--type", "image/png", "--no-newline"]),
+        _ => ("xclip", &["-selection", "clipboard", "-t", "image/png", "-o"]),
+    };
+    std::process::Command::new(cmd)
+        .args(args)
+        .output()
+        .ok()
+        .filter(|out| out.status.success() && !out.stdout.is_empty())
+        .map(|out| out.stdout)
+}
+
 #[tauri::command]
 fn read_clipboard_image() -> Option<String> {
-    // Wayland
-    if let Ok(out) = std::process::Command::new("wl-paste")
-        .args(["--type", "image/png", "--no-newline"])
-        .output()
-    {
-        if out.status.success() && !out.stdout.is_empty() {
-            return Some(base64_encode_bytes(&out.stdout));
+    // Usar tool cacheado si existe
+    if let Some(Some(tool)) = CLIPBOARD_TOOL.get() {
+        if let Some(data) = read_clipboard_image_raw(tool) {
+            return Some(base64_encode_bytes(&data));
         }
     }
-    // X11
-    if let Ok(out) = std::process::Command::new("xclip")
-        .args(["-selection", "clipboard", "-t", "image/png", "-o"])
-        .output()
-    {
-        if out.status.success() && !out.stdout.is_empty() {
-            return Some(base64_encode_bytes(&out.stdout));
+
+    // Detectar: probar wl-paste (Wayland) primero, luego xclip (X11)
+    for tool in ["wl-paste", "xclip"] {
+        if let Some(data) = read_clipboard_image_raw(tool) {
+            let _ = CLIPBOARD_TOOL.set(Some(tool));
+            return Some(base64_encode_bytes(&data));
         }
     }
+    // Cachear que no hay tool disponible
+    let _ = CLIPBOARD_TOOL.set(None);
     None
 }
 
