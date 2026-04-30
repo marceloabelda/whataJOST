@@ -73,17 +73,47 @@ fn check_for_updates(app: &AppHandle) {
                     if result {
                         let h = handle.clone();
                         tauri::async_runtime::spawn(async move {
-                            match update.download_and_install(|_, _| {}, || {}).await {
+                            // Descargar el paquete
+                            let bytes = match update.download(|_, _| {}, || {}).await {
+                                Ok(b) => b,
                                 Err(e) => {
                                     h.dialog()
-                                        .message(format!("Error al actualizar: {e}"))
+                                        .message(format!("Error al descargar: {e}"))
                                         .title("whataJOST - Error")
                                         .kind(MessageDialogKind::Error)
                                         .buttons(MessageDialogButtons::Ok)
                                         .show(|_| {});
+                                    return;
                                 }
-                                Ok(()) => {}
+                            };
+
+                            // Guardar en un archivo temporal
+                            let tmp = std::env::temp_dir().join(format!(
+                                "whatajost_update_{}.deb",
+                                update.version
+                            ));
+                            if let Err(e) = std::fs::write(&tmp, &bytes) {
+                                h.dialog()
+                                    .message(format!("Error al guardar el paquete: {e}"))
+                                    .title("whataJOST - Error")
+                                    .kind(MessageDialogKind::Error)
+                                    .buttons(MessageDialogButtons::Ok)
+                                    .show(|_| {});
+                                return;
                             }
+
+                            // Abrir con el instalador del sistema (pide permisos vía polkit)
+                            if let Err(e) = std::process::Command::new("xdg-open")
+                                .arg(&tmp)
+                                .spawn()
+                            {
+                                h.dialog()
+                                    .message(format!("Error al abrir el instalador: {e}"))
+                                    .title("whataJOST - Error")
+                                    .kind(MessageDialogKind::Error)
+                                    .buttons(MessageDialogButtons::Ok)
+                                    .show(|_| {});
+                            };
                         });
                     }
                 });
