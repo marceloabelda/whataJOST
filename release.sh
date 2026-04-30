@@ -52,6 +52,9 @@ git commit -m "Release v${VERSION}"
 # Crear tag
 git tag "v${VERSION}" -m "Release v${VERSION}"
 
+# Setear clave privada para firmar los bundles
+export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
+
 echo "🔨 Buildenado la app..."
 npx tauri build 2>&1
 
@@ -142,7 +145,7 @@ gh release create "v${VERSION}" "${ASSETS[@]}" \
     --notes "Release v${VERSION}" \
     --repo marceloabelda/whataJOST
 
-# Pushear rama y tag
-git push origin main
+# Pushear rama y tags
+git push origin main --tags
 
 echo "✅ Release v${VERSION} publicada con auto-update."

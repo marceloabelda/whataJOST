@@ -36,7 +36,7 @@
   },
   "plugins": {
     "updater": {
-      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDk3NTg5QTkxNjYyMEYzMjcKUldRbjh5Qm1rWnBZbDlPYXhZSXBJMElpdFIvVEhCWmZuMU5RNXhUbFhLS1JNTWRDY3kwUGFDRXoK",
+      "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDg4MUJGRTlGNDIxMTJDNTcKUldSWExCRkNuLzRiaU5IZFBoT2F5VHVwbmtVeGZaUzlqRmsyUCtDbGt5bjN1d0JBbzh6cWJOV2kK",
       "endpoints": [
         "https://github.com/marceloabelda/whataJOST/releases/latest/download/latest.json"
       ]
