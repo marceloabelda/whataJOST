@@ -14,8 +14,11 @@ use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("whatsapp-web") {
+        let _ = window.unminimize();
+        let _ = window.set_always_on_top(true);
         let _ = window.show();
         let _ = window.set_focus();
+        let _ = window.set_always_on_top(false);
     }
 }
 
@@ -122,9 +125,15 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                 .status()
                             {
                                 Ok(status) if status.success() => {
-                                    // Actualizado correctamente, reiniciar la app
+                                    // Relanzar la app antes de salir
+                                    if let Ok(exe) = std::env::current_exe() {
+                                        let _ = std::process::Command::new(&exe)
+                                            .stdin(std::process::Stdio::null())
+                                            .stdout(std::process::Stdio::null())
+                                            .stderr(std::process::Stdio::null())
+                                            .spawn();
+                                    }
                                     h.exit(0);
-                                    // Relanzar (mejor intento, pkexec ya reemplazó el binario)
                                 }
                                 Ok(status) => {
                                     h.dialog()

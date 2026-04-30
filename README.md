@@ -18,7 +18,8 @@ es un fork de https://github.com/jude7733/whatauri
 - [x] Actualización automática (checkea al iniciar y desde el menú del tray)
 - [x] Pegar imágenes desde el portapapeles del sistema
 - [x] Versión visible en la barra de título
-- [ ] Descargar archivos (PDF, imagenes.. etc)
+- [x] Descargar archivos (PDF, imagenes.. etc)
+- [x] Reinicio automático post-actualización
 - [ ] Auto Startup
 - [ ] Atajo de teclado global (mostrar/ocultar ventana)
 - [ ] Recordar tamaño y posición de ventana
@@ -26,7 +27,7 @@ es un fork de https://github.com/jude7733/whatauri
 - [ ] Múltiples cuentas
 - [ ] Zoom configurable
 - [ ] Modo no molestar
-- [ ] Click en tray icon, siempre trae la app a primer plano
+- [x] Click en tray icon, siempre trae la app a primer plano
 - [ ] Agregar el el tray, Minimize to tray
 
 
@@ -36,7 +37,11 @@ es un fork de https://github.com/jude7733/whatauri
 
 ```bash
 sudo dpkg -i whataJOST_*_amd64.deb
+# Si faltan dependencias:
+sudo apt install -f
 ```
+
+Dependencias que instala automáticamente: `xclip`, `wl-clipboard`, `policykit-1`.
 
 ### Fedora
 

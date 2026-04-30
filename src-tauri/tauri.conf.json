@@ -32,7 +32,15 @@
       "icons/icon.icns",
       "icons/icon.ico"
     ],
-    "createUpdaterArtifacts": true
+    "createUpdaterArtifacts": true,
+    "linux": {
+      "deb": {
+        "depends": ["xclip", "wl-clipboard", "policykit-1"]
+      },
+      "rpm": {
+        "depends": ["xclip", "wl-clipboard", "policykit-1"]
+      }
+    }
   },
   "plugins": {
     "updater": {
