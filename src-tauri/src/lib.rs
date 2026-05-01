@@ -1,11 +1,11 @@
-use std::sync::OnceLock;
+use std::sync::{Mutex, OnceLock};
 use std::time::Duration;
 
 use tauri::{
     image::Image,
-    menu::{Menu, MenuEvent, MenuItem},
+    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
@@ -356,6 +356,29 @@ fn base64_encode_bytes(data: &[u8]) -> String {
 
 static CLIPBOARD_TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
 
+struct NotificationPopupState(Mutex<bool>);
+
+fn config_path(app: &AppHandle) -> std::path::PathBuf {
+    let dir = app.path().app_config_dir().expect("failed to get config dir");
+    std::fs::create_dir_all(&dir).ok();
+    dir.join("config.json")
+}
+
+fn load_notification_enabled(app: &AppHandle) -> bool {
+    let path = config_path(app);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("notifications_enabled").and_then(|e| e.as_bool()))
+        .unwrap_or(true)
+}
+
+fn save_notification_enabled(app: &AppHandle, enabled: bool) {
+    let path = config_path(app);
+    let json = serde_json::json!({"notifications_enabled": enabled});
+    std::fs::write(&path, json.to_string()).ok();
+}
+
 fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
     let (cmd, args): (&str, &[&str]) = match tool {
         "wl-paste" => ("wl-paste", &["--type", "image/png", "--no-newline"]),
@@ -409,7 +432,11 @@ fn url_encode(s: &str) -> String {
 }
 
 #[tauri::command]
-fn show_notification(app: AppHandle, title: String, body: String) {
+fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, title: String, body: String) {
+    if !*state.0.lock().unwrap() {
+        return;
+    }
+
     // Close any existing notification first
     if let Some(existing) = app.get_webview_window("notification") {
         let _ = existing.close();
@@ -516,14 +543,19 @@ pub fn run() {
             save_file
         ])
         .setup(|app| {
+            let notifications_enabled = load_notification_enabled(app.handle());
+            app.manage(NotificationPopupState(Mutex::new(notifications_enabled)));
+
             create_whatsapp_window(app.handle())?;
 
             let show_item =
                 MenuItem::with_id(app, "show", "Abrir WhatsApp", true, None::<&str>)?;
+            let notify_item =
+                CheckMenuItem::with_id(app, "toggle_notify", "Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
             let update_item =
                 MenuItem::with_id(app, "update", "Buscar actualización", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &update_item, &quit_item])?;
+            let menu = Menu::with_items(app, &[&show_item, &notify_item, &update_item, &quit_item])?;
 
             let icon = Image::from_bytes(include_bytes!("../../public/tray.png"))?;
 
@@ -536,6 +568,12 @@ pub fn run() {
                     "quit" => app.exit(0),
                     "show" => show_window(app),
                     "update" => check_for_updates(app),
+                    "toggle_notify" => {
+                        let state = app.state::<NotificationPopupState>();
+                        let mut enabled = state.0.lock().unwrap();
+                        *enabled = !*enabled;
+                        save_notification_enabled(app, *enabled);
+                    }
                     _ => {}
                 })
                 .on_tray_icon_event(|tray: &TrayIcon, event: TrayIconEvent| {

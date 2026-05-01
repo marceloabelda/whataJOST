@@ -11,7 +11,8 @@
       "Bash(curl -sv \"https://github.com/marceloabelda/whataJOST/releases/latest/download/latest.json\")",
       "Bash(gh release *)",
       "Bash(curl *)",
-      "Bash(git *)"
+      "Bash(git *)",
+      "Bash(cargo check *)"
     ]
   }
 }

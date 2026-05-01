@@ -27,6 +27,7 @@ es un fork de https://github.com/jude7733/whatauri
 - [ ] Múltiples cuentas
 - [ ] Zoom configurable
 - [ ] Modo no molestar
+- [x] Toggle notificaciones emergentes desde el menú del tray (persistido en disco)
 - [x] Click en tray icon, siempre trae la app a primer plano
 - [ ] Agregar el el tray, Minimize to tray
 
@@ -69,6 +70,12 @@ Para publicar una nueva versión:
 ```
 
 El script buildena, firma los paquetes, genera el manifiesto y crea el release en GitHub.
+
+## Changelog
+
+### v1.1.24
+- Toggle de notificaciones emergentes en el menú del tray ("Notificaciones emergentes" checkeable).
+- La preferencia se persiste en `~/.config/com.whatajost.app/config.json` entre reinicios.
 
 ## Icon
 
