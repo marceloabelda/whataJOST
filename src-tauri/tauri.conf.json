@@ -35,10 +35,10 @@
     "createUpdaterArtifacts": true,
     "linux": {
       "deb": {
-        "depends": ["xclip", "wl-clipboard"]
+        "depends": ["xclip", "wl-clipboard", "fonts-noto-color-emoji"]
       },
       "rpm": {
-        "depends": ["xclip", "wl-clipboard"]
+        "depends": ["xclip", "wl-clipboard", "google-noto-color-emoji-fonts"]
       }
     }
   },

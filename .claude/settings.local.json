@@ -12,7 +12,9 @@
       "Bash(gh release *)",
       "Bash(curl *)",
       "Bash(git *)",
-      "Bash(cargo check *)"
+      "Bash(cargo check *)",
+      "Bash(fc-list)",
+      "Bash(dpkg -l)"
     ]
   }
 }
