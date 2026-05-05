@@ -7,6 +7,7 @@ use tauri::{
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
 };
+use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_opener::OpenerExt;
 use tauri_plugin_updater::UpdaterExt;
 use base64::Engine;
@@ -532,6 +533,10 @@ pub fn run() {
         .plugin(tauri_plugin_clipboard_manager::init())
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_autostart::init(
+            tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+            None::<Vec<&str>>,
+        ))
         .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
             show_window(app);
         }))
@@ -548,14 +553,30 @@ pub fn run() {
 
             create_whatsapp_window(app.handle())?;
 
+            let autostart_enabled = app
+                .autolaunch()
+                .is_enabled()
+                .unwrap_or(false);
+
             let show_item =
                 MenuItem::with_id(app, "show", "Abrir WhatsApp", true, None::<&str>)?;
+            let autostart_item = CheckMenuItem::with_id(
+                app,
+                "autostart",
+                "Iniciar con el sistema",
+                true,
+                autostart_enabled,
+                None::<&str>,
+            )?;
             let notify_item =
                 CheckMenuItem::with_id(app, "toggle_notify", "Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
             let update_item =
                 MenuItem::with_id(app, "update", "Buscar actualización", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show_item, &notify_item, &update_item, &quit_item])?;
+            let menu = Menu::with_items(
+                app,
+                &[&show_item, &autostart_item, &notify_item, &update_item, &quit_item],
+            )?;
 
             let icon = Image::from_bytes(include_bytes!("../../public/tray.png"))?;
 
@@ -573,6 +594,14 @@ pub fn run() {
                         let mut enabled = state.0.lock().unwrap();
                         *enabled = !*enabled;
                         save_notification_enabled(app, *enabled);
+                    }
+                    "autostart" => {
+                        let enabled = app.autolaunch().is_enabled().unwrap_or(false);
+                        if enabled {
+                            let _ = app.autolaunch().disable();
+                        } else {
+                            let _ = app.autolaunch().enable();
+                        }
                     }
                     _ => {}
                 })
