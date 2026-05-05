@@ -27,3 +27,4 @@ dist-ssr
 # Tauri updater signing keys
 src-tauri/updater_key
 src-tauri/updater_key.pub
+.claude/settings.local.json
