@@ -323,6 +323,35 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 get: () => 'granted',
                 configurable: true
             });
+
+
+            // Watch document.title for unread message count
+            (function() {
+                let lastCount = 0;
+                function checkCount() {
+                    const title = document.title;
+                    let count = 0;
+                    const m = title.match(/^\((\d+)\)\s/);
+                    if (m) { count = parseInt(m[1], 10) || 0; }
+                    if (count !== lastCount) {
+                        lastCount = count;
+                        try {
+                            window.__TAURI_INTERNALS__.invoke('update_unread_count', { count: count });
+                        } catch(e) {}
+                    }
+                }
+                if (document.readyState === 'loading') {
+                    document.addEventListener('DOMContentLoaded', checkCount, { once: true });
+                } else {
+                    checkCount();
+                }
+                const titleEl = document.querySelector('title');
+                if (titleEl) {
+                    const obs = new MutationObserver(checkCount);
+                    obs.observe(titleEl, { childList: true, characterData: true, subtree: true });
+                }
+                setInterval(checkCount, 2500);
+            })();
         })();
     "#)
     .build()?;
@@ -357,6 +386,11 @@ fn base64_encode_bytes(data: &[u8]) -> String {
 
 static CLIPBOARD_TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
 
+struct TrayBadgeState {
+    base_rgba: Vec<u8>,
+    current_count: Mutex<u32>,
+}
+
 struct NotificationPopupState(Mutex<bool>);
 
 fn config_path(app: &AppHandle) -> std::path::PathBuf {
@@ -378,6 +412,124 @@ fn save_notification_enabled(app: &AppHandle, enabled: bool) {
     let path = config_path(app);
     let json = serde_json::json!({"notifications_enabled": enabled});
     std::fs::write(&path, json.to_string()).ok();
+}
+
+// --- tray badge rendering ---
+
+const DIGIT_PATTERNS: [[u8; 7]; 10] = [
+    [0b01110, 0b10001, 0b10011, 0b10101, 0b11001, 0b10001, 0b01110],
+    [0b00100, 0b01100, 0b00100, 0b00100, 0b00100, 0b00100, 0b11111],
+    [0b01110, 0b10001, 0b00001, 0b00010, 0b00100, 0b01000, 0b11111],
+    [0b01110, 0b10001, 0b00001, 0b00110, 0b00001, 0b10001, 0b01110],
+    [0b00010, 0b00110, 0b01010, 0b10010, 0b11111, 0b00010, 0b00010],
+    [0b11111, 0b10000, 0b11110, 0b00001, 0b00001, 0b10001, 0b01110],
+    [0b01110, 0b10000, 0b10000, 0b11110, 0b10001, 0b10001, 0b01110],
+    [0b11111, 0b00001, 0b00010, 0b00100, 0b01000, 0b01000, 0b01000],
+    [0b01110, 0b10001, 0b10001, 0b01110, 0b10001, 0b10001, 0b01110],
+    [0b01110, 0b10001, 0b10001, 0b01111, 0b00001, 0b00001, 0b01110],
+];
+
+const PLUS_PATTERN: [u8; 7] = [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000];
+const FONT_SCALE: u32 = 2;
+
+fn set_pixel(rgba: &mut [u8], img_w: u32, x: u32, y: u32, r: u8, g: u8, b: u8, a: u8) {
+    let i = ((y * img_w + x) * 4) as usize;
+    if i + 3 < rgba.len() {
+        rgba[i] = r;
+        rgba[i + 1] = g;
+        rgba[i + 2] = b;
+        rgba[i + 3] = a;
+    }
+}
+
+fn blend_pixel(rgba: &mut [u8], img_w: u32, x: u32, y: u32, r: u8, g: u8, b: u8, a: u8) {
+    if a == 0 { return; }
+    if a == 255 { set_pixel(rgba, img_w, x, y, r, g, b, 255); return; }
+    let i = ((y * img_w + x) * 4) as usize;
+    if i + 3 >= rgba.len() { return; }
+    let da = rgba[i + 3] as u32;
+    let sa = a as u32;
+    let oa = sa + da * (255 - sa) / 255;
+    if oa == 0 { rgba[i]=0; rgba[i+1]=0; rgba[i+2]=0; rgba[i+3]=0; return; }
+    rgba[i]   = ((r as u32 * sa + rgba[i]   as u32 * da * (255 - sa) / 255) / oa) as u8;
+    rgba[i+1] = ((g as u32 * sa + rgba[i+1] as u32 * da * (255 - sa) / 255) / oa) as u8;
+    rgba[i+2] = ((b as u32 * sa + rgba[i+2] as u32 * da * (255 - sa) / 255) / oa) as u8;
+    rgba[i+3] = oa as u8;
+}
+
+fn draw_filled_circle(rgba: &mut [u8], img_w: u32, img_h: u32,
+                      cx: f32, cy: f32, radius: f32, r: u8, g: u8, b: u8) {
+    let feather = 1.2;
+    let min_y = ((cy - radius - feather).max(0.0)) as u32;
+    let max_y = ((cy + radius + feather).min(img_h as f32)) as u32;
+    let min_x = ((cx - radius - feather).max(0.0)) as u32;
+    let max_x = ((cx + radius + feather).min(img_w as f32)) as u32;
+    for y in min_y..max_y {
+        for x in min_x..max_x {
+            let dist = ((x as f32 - cx).powi(2) + (y as f32 - cy).powi(2)).sqrt();
+            if dist >= radius + feather { continue; }
+            let alpha = if dist <= radius - 0.5 {
+                1.0
+            } else {
+                ((radius + feather - dist) / (feather + 0.5)).clamp(0.0, 1.0)
+            };
+            blend_pixel(rgba, img_w, x, y, r, g, b, (alpha * 255.0) as u8);
+        }
+    }
+}
+
+fn draw_char(rgba: &mut [u8], img_w: u32, start_x: f32, start_y: f32,
+             pattern: &[u8; 7], scale: u32) {
+    let s = scale as f32;
+    for row in 0..7u32 {
+        let bits = pattern[row as usize];
+        for col in 0..5u32 {
+            if bits & (1 << (4 - col)) != 0 {
+                let px = start_x + col as f32 * s;
+                let py = start_y + row as f32 * s;
+                for dy in 0..scale {
+                    for dx in 0..scale {
+                        set_pixel(rgba, img_w,
+                            (px + dx as f32) as u32,
+                            (py + dy as f32) as u32,
+                            255, 255, 255, 255);
+                    }
+                }
+            }
+        }
+    }
+}
+
+fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, count: u32) {
+    let text: Vec<char> = if count > 9 {
+        "9+".chars().collect()
+    } else if count == 0 {
+        return;
+    } else {
+        count.to_string().chars().collect()
+    };
+    let char_w = (5 * FONT_SCALE) as f32;
+    let spacing = FONT_SCALE as f32;
+    let total_w = text.len() as f32 * char_w + (text.len() as f32 - 1.0) * spacing;
+    let start_x = cx - total_w / 2.0;
+    let text_h = (7 * FONT_SCALE) as f32;
+    let start_y = cy - text_h / 2.0;
+    for (i, ch) in text.iter().enumerate() {
+        let pat = match ch {
+            '0'..='9' => &DIGIT_PATTERNS[*ch as usize - '0' as usize],
+            '+' => &PLUS_PATTERN,
+            _ => continue,
+        };
+        draw_char(rgba, img_w, start_x + i as f32 * (char_w + spacing), start_y, pat, FONT_SCALE);
+    }
+}
+
+fn generate_badged_icon(base_rgba: &[u8], count: u32) -> Option<Vec<u8>> {
+    if count == 0 { return None; }
+    let mut rgba = base_rgba.to_vec();
+    draw_filled_circle(&mut rgba, 64, 64, 48.0, 16.0, 14.0, 255, 59, 48);
+    draw_count_text(&mut rgba, 64, 48.0, 16.0, count);
+    Some(rgba)
 }
 
 fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
@@ -519,6 +671,27 @@ fn save_file(data: String, file_name: String) -> Result<String, String> {
 }
 
 #[tauri::command]
+fn update_unread_count(app: AppHandle, badge_state: State<'_, TrayBadgeState>, count: u32) {
+    {
+        let mut current = badge_state.current_count.lock().unwrap();
+        if *current == count { return; }
+        *current = count;
+    }
+    let tray = app.state::<TrayIcon>();
+    let icon = if count == 0 {
+        Some(Image::new_owned(
+            badge_state.base_rgba.clone(),
+            64, 64))
+    } else {
+        generate_badged_icon(&badge_state.base_rgba, count)
+            .map(|rgba| Image::new_owned(rgba, 64, 64))
+    };
+    if let Err(e) = tray.set_icon(icon) {
+        eprintln!("[whataJOST] Failed to update tray icon: {e}");
+    }
+}
+
+#[tauri::command]
 fn open_whatsapp(app: AppHandle) {
     show_window(&app);
     if let Some(win) = app.get_webview_window("notification") {
@@ -545,7 +718,8 @@ pub fn run() {
             close_notification,
             open_whatsapp,
             read_clipboard_image,
-            save_file
+            save_file,
+            update_unread_count
         ])
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());
@@ -579,6 +753,11 @@ pub fn run() {
             )?;
 
             let icon = Image::from_bytes(include_bytes!("../../public/tray.png"))?;
+
+            app.manage(TrayBadgeState {
+                base_rgba: icon.rgba().to_vec(),
+                current_count: Mutex::new(0),
+            });
 
             let tray = TrayIconBuilder::new()
                 .icon(icon)
