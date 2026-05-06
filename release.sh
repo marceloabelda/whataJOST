@@ -103,7 +103,9 @@ echo "  \"pub_date\": \"${NOW}\"," >> latest.json
 echo "  \"platforms\": {" >> latest.json
 
 FIRST=true
-for BUNDLE in "$BUNDLE_DIR"/deb/*.deb "$BUNDLE_DIR"/rpm/*.rpm "$BUNDLE_DIR"/app/*.AppImage "$BUNDLE_DIR"/app/*.tar.gz "$BUNDLE_DIR"/dmg/*.dmg "$BUNDLE_DIR"/msi/*.msi; do
+# RPM se sube al release para descarga manual pero no va en latest.json
+# (el auto-updater solo soporta un bundle por plataforma y usamos dpkg en Linux)
+for BUNDLE in "$BUNDLE_DIR"/deb/*.deb "$BUNDLE_DIR"/app/*.AppImage "$BUNDLE_DIR"/app/*.tar.gz "$BUNDLE_DIR"/dmg/*.dmg "$BUNDLE_DIR"/msi/*.msi; do
     [ -f "$BUNDLE" ] || continue
 
     # Buscar archivo .sig correspondiente
@@ -114,7 +116,7 @@ for BUNDLE in "$BUNDLE_DIR"/deb/*.deb "$BUNDLE_DIR"/rpm/*.rpm "$BUNDLE_DIR"/app/
     FILENAME=$(basename "$BUNDLE")
 
     # Determinar el target a partir del nombre o directorio
-    if [[ "$BUNDLE" == *"/deb/"* ]] || [[ "$BUNDLE" == *"/rpm/"* ]] || [[ "$BUNDLE" == *"/app/"* ]]; then
+    if [[ "$BUNDLE" == *"/deb/"* ]] || [[ "$BUNDLE" == *"/app/"* ]]; then
         BUNDLE_TARGET="$TARGET"
     elif [[ "$BUNDLE" == *"/dmg/"* ]]; then
         BUNDLE_TARGET="$TARGET"

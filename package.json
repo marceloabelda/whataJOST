@@ -10,8 +10,8 @@
     "tauri": "tauri"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.2.7",
-    "vite": "^6.1.1"
+    "@tauri-apps/cli": "^2.11.1",
+    "vite": "^6.4.2"
   },
   "dependencies": {
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2"

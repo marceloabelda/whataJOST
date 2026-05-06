@@ -148,7 +148,7 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                     if let Ok(exe) = std::env::current_exe() {
                                         let _ = std::process::Command::new("sh")
                                             .arg("-c")
-                                            .arg(format!("sleep 2 && exec {}", exe.display()))
+                                            .arg(format!("sleep 2 && exec '{}'", exe.display()))
                                             .stdin(std::process::Stdio::null())
                                             .stdout(std::process::Stdio::null())
                                             .stderr(std::process::Stdio::null())
@@ -311,6 +311,44 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 // que es lo que ocurre al inyectar vía <input type="file"> + change).
                 const dt = new DataTransfer();
                 dt.items.add(file);
+
+                let pasteEvent;
+                try {
+                    pasteEvent = new ClipboardEvent('paste', {
+                        bubbles: true,
+                        cancelable: true,
+                        clipboardData: dt
+                    });
+                } catch(_) {
+                    pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+                    Object.defineProperty(pasteEvent, 'clipboardData', {
+                        get: function() { return dt; },
+                        configurable: true
+                    });
+                }
+
+                const target = document.activeElement || document.body;
+                target.dispatchEvent(pasteEvent);
+            }, true);
+
+            // Interceptar drag & drop para pegar archivos en la conversación
+            document.addEventListener('dragover', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+            }, true);
+
+            document.addEventListener('drop', function(e) {
+                e.preventDefault();
+                e.stopPropagation();
+
+                if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) {
+                    return;
+                }
+
+                const dt = new DataTransfer();
+                for (let i = 0; i < e.dataTransfer.files.length; i++) {
+                    dt.items.add(e.dataTransfer.files[i]);
+                }
 
                 let pasteEvent;
                 try {
