@@ -7,7 +7,8 @@ use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuEvent, MenuItem},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
-    AppHandle, Manager, State, WebviewUrl, WebviewWindowBuilder, WindowEvent,
+    AppHandle, DragDropEvent, Manager, State, WebviewEvent, WebviewUrl, WebviewWindowBuilder,
+    WindowEvent,
 };
 use tauri_plugin_autostart::ManagerExt;
 use tauri_plugin_opener::OpenerExt;
@@ -430,7 +431,37 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         }
     });
 
-    
+    // Manejar drag & drop de archivos desde el sistema operativo
+    let w = window.clone();
+    window.on_webview_event(move |event| {
+        if let WebviewEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
+            let mut files_json = String::from("[");
+            for (i, path) in paths.iter().enumerate() {
+                if let Ok(data) = std::fs::read(path) {
+                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
+                        if i > 0 {
+                            files_json.push(',');
+                        }
+                        let b64 = base64::Engine::encode(
+                            &base64::engine::general_purpose::STANDARD,
+                            &data,
+                        );
+                        let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+                        files_json.push_str(&format!(
+                            r#"{{"name":"{}","data":"{}"}}"#,
+                            escaped_name, b64
+                        ));
+                    }
+                }
+            }
+            files_json.push(']');
+
+            let _ = w.eval(&format!(
+                r#"(function(){{var files={};if(!files.length)return;var dt=new DataTransfer();for(var i=0;i<files.length;i++){{var f=files[i];var b=atob(f.data);var a=new Uint8Array(b.length);for(var j=0;j<b.length;j++)a[j]=b.charCodeAt(j);var blob=new Blob([a],{{type:"application/octet-stream"}});var file=new File([blob],f.name,{{type:"application/octet-stream"}});dt.items.add(file);}}var pe;try{{pe=new ClipboardEvent("paste",{{bubbles:true,cancelable:true,clipboardData:dt}});}}catch(_){{pe=new Event("paste",{{bubbles:true,cancelable:true}});Object.defineProperty(pe,"clipboardData",{{get:function(){{return dt;}},configurable:true}});}}(document.activeElement||document.body).dispatchEvent(pe);}})()"#,
+                files_json
+            ));
+        }
+    });
 
     Ok(())
 }
