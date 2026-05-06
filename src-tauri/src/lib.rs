@@ -1,4 +1,6 @@
-use std::sync::{Mutex, OnceLock};
+use std::sync::Mutex;
+#[cfg(target_os = "linux")]
+use std::sync::OnceLock;
 use std::time::Duration;
 
 use tauri::{
@@ -104,8 +106,14 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                             };
 
                             // Guardar en un archivo temporal
+                            #[cfg(target_os = "linux")]
                             let tmp = std::env::temp_dir().join(format!(
                                 "whatajost_update_{}.deb",
+                                update.version
+                            ));
+                            #[cfg(target_os = "windows")]
+                            let tmp = std::env::temp_dir().join(format!(
+                                "whatajost_update_{}.msi",
                                 update.version
                             ));
                             if let Err(e) = std::fs::write(&tmp, &bytes) {
@@ -118,24 +126,33 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                 return;
                             }
 
-                            // Instalar con pkexec (pide contraseña de sudo)
-                            match std::process::Command::new("pkexec")
+                            #[cfg(target_os = "linux")]
+                            let install_result = std::process::Command::new("pkexec")
                                 .arg("dpkg")
                                 .arg("-i")
                                 .arg(&tmp)
-                                .status()
-                            {
+                                .status();
+
+                            #[cfg(target_os = "windows")]
+                            let install_result = std::process::Command::new("msiexec")
+                                .arg("/i")
+                                .arg(&tmp)
+                                .arg("/quiet")
+                                .status();
+
+                            match install_result {
                                 Ok(status) if status.success() => {
-                                    // Relanzar la app en un nuevo process group
-                                    // para que sobreviva cuando este proceso salga.
                                     if let Ok(exe) = std::env::current_exe() {
-                                        use std::os::unix::process::CommandExt;
-                                        let _ = std::process::Command::new(&exe)
-                                            .process_group(0)
-                                            .stdin(std::process::Stdio::null())
+                                        let mut cmd = std::process::Command::new(&exe);
+                                        cmd.stdin(std::process::Stdio::null())
                                             .stdout(std::process::Stdio::null())
-                                            .stderr(std::process::Stdio::null())
-                                            .spawn();
+                                            .stderr(std::process::Stdio::null());
+                                        #[cfg(unix)]
+                                        {
+                                            use std::os::unix::process::CommandExt;
+                                            cmd.process_group(0);
+                                        }
+                                        let _ = cmd.spawn();
                                     }
                                     h.exit(0);
                                 }
@@ -372,6 +389,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     Ok(())
 }
 
+#[cfg(target_os = "linux")]
 fn base64_encode_bytes(data: &[u8]) -> String {
     const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
     let mut out = String::with_capacity((data.len() + 2) / 3 * 4);
@@ -387,6 +405,7 @@ fn base64_encode_bytes(data: &[u8]) -> String {
     out
 }
 
+#[cfg(target_os = "linux")]
 static CLIPBOARD_TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
 
 struct TrayBadgeState {
@@ -535,6 +554,7 @@ fn generate_badged_icon(base_rgba: &[u8], count: u32) -> Option<Vec<u8>> {
     Some(rgba)
 }
 
+#[cfg(target_os = "linux")]
 fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
     let (cmd, args): (&str, &[&str]) = match tool {
         "wl-paste" => ("wl-paste", &["--type", "image/png", "--no-newline"]),
@@ -548,24 +568,27 @@ fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
         .map(|out| out.stdout)
 }
 
+#[cfg(target_os = "linux")]
 #[tauri::command]
 fn read_clipboard_image() -> Option<String> {
-    // Usar tool cacheado si existe
     if let Some(Some(tool)) = CLIPBOARD_TOOL.get() {
         if let Some(data) = read_clipboard_image_raw(tool) {
             return Some(base64_encode_bytes(&data));
         }
     }
-
-    // Detectar: probar wl-paste (Wayland) primero, luego xclip (X11)
     for tool in ["wl-paste", "xclip"] {
         if let Some(data) = read_clipboard_image_raw(tool) {
             let _ = CLIPBOARD_TOOL.set(Some(tool));
             return Some(base64_encode_bytes(&data));
         }
     }
-    // Cachear que no hay tool disponible
     let _ = CLIPBOARD_TOOL.set(None);
+    None
+}
+
+#[cfg(not(target_os = "linux"))]
+#[tauri::command]
+fn read_clipboard_image() -> Option<String> {
     None
 }
 

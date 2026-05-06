@@ -59,10 +59,13 @@ git tag "v${VERSION}" -m "Release v${VERSION}"
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
-echo "🔨 Buildenado la app..."
+echo "🔨 Buildenado la app para Linux..."
 # Limpiar builds anteriores para que no se cuelen bundles viejos en el latest.json
 rm -rf src-tauri/target/release/bundle
 npx tauri build 2>&1
+
+echo "🔨 Buildenado la app para Windows..."
+npx tauri build --target x86_64-pc-windows-gnu --bundles msi 2>&1
 
 echo "📤 Subiendo commit y tag a GitHub..."
 git push origin main "v${VERSION}"
