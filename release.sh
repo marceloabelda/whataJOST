@@ -59,6 +59,10 @@ git tag "v${VERSION}" -m "Release v${VERSION}"
 export TAURI_SIGNING_PRIVATE_KEY="$(cat "$KEY_FILE")"
 export TAURI_SIGNING_PRIVATE_KEY_PASSWORD=""
 
+echo "📦 Actualizando dependencias..."
+cargo update --manifest-path src-tauri/Cargo.toml 2>&1
+pnpm update 2>&1
+
 echo "🔨 Buildenado la app para Linux..."
 # Limpiar builds anteriores para que no se cuelen bundles viejos en el latest.json
 rm -rf src-tauri/target/release/bundle
