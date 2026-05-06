@@ -142,16 +142,24 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
 
                             match install_result {
                                 Ok(status) if status.success() => {
+                                    // Relanzar: en Linux usamos un shell con delay para
+                                    // que single-instance del proceso viejo libere el lock
+                                    #[cfg(target_os = "linux")]
+                                    if let Ok(exe) = std::env::current_exe() {
+                                        let _ = std::process::Command::new("sh")
+                                            .arg("-c")
+                                            .arg(format!("sleep 2 && exec {}", exe.display()))
+                                            .stdin(std::process::Stdio::null())
+                                            .stdout(std::process::Stdio::null())
+                                            .stderr(std::process::Stdio::null())
+                                            .spawn();
+                                    }
+                                    #[cfg(target_os = "windows")]
                                     if let Ok(exe) = std::env::current_exe() {
                                         let mut cmd = std::process::Command::new(&exe);
                                         cmd.stdin(std::process::Stdio::null())
                                             .stdout(std::process::Stdio::null())
                                             .stderr(std::process::Stdio::null());
-                                        #[cfg(unix)]
-                                        {
-                                            use std::os::unix::process::CommandExt;
-                                            cmd.process_group(0);
-                                        }
                                         let _ = cmd.spawn();
                                     }
                                     h.exit(0);
