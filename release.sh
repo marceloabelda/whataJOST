@@ -64,9 +64,6 @@ echo "🔨 Buildenado la app para Linux..."
 rm -rf src-tauri/target/release/bundle
 npx tauri build 2>&1
 
-echo "🔨 Buildenado la app para Windows..."
-npx tauri build --target x86_64-pc-windows-gnu --bundles msi 2>&1
-
 echo "📤 Subiendo commit y tag a GitHub..."
 git push origin main "v${VERSION}"
 
