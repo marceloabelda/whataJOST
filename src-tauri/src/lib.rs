@@ -126,9 +126,12 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                 .status()
                             {
                                 Ok(status) if status.success() => {
-                                    // Relanzar la app antes de salir
+                                    // Relanzar la app en un nuevo process group
+                                    // para que sobreviva cuando este proceso salga.
                                     if let Ok(exe) = std::env::current_exe() {
+                                        use std::os::unix::process::CommandExt;
                                         let _ = std::process::Command::new(&exe)
+                                            .process_group(0)
                                             .stdin(std::process::Stdio::null())
                                             .stdout(std::process::Stdio::null())
                                             .stderr(std::process::Stdio::null())
