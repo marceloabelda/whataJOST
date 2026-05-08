@@ -9,7 +9,7 @@ Para cada tarea, seguí estos pasos en orden:
 1. **Buscar** — Usá `mcp__codebase-search__search_codebase` (si está disponible), más la documentación del proyecto y los archivos fuente relevantes para entender el contexto antes de escribir código.
 2. **Codificar** — Implementá los cambios necesarios.
 3. **Documentar** — Mantené actualizado este CLAUDE.md si cambiaron decisiones de arquitectura, flujos, o dependencias.
-4. **Commit y push** — Hacé commit con mensaje descriptivo en español y pusheá a ambos remotos: `origin` (GitHub) y `gitea` (git.jost.ar).
+4. **Commit y push** — Hacé commit con mensaje descriptivo en español y pusheá con `git push origin main` (empuja a GitHub y git.jost.ar en simultáneo). El pull solo se hace desde GitHub.
 
 ## Architecture
 
