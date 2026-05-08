@@ -341,6 +341,18 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 }
             }, true);
 
+            // Allow native context menu on editable fields (spellcheck suggestions)
+            document.addEventListener('contextmenu', function(e) {
+                const el = e.target.nodeType === Node.TEXT_NODE
+                    ? e.target.parentElement
+                    : e.target;
+                if (el && (el.isContentEditable
+                    || el.tagName === 'INPUT'
+                    || el.tagName === 'TEXTAREA')) {
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+
             // Interceptar evento paste para pegar imágenes desde el portapapeles del sistema
             document.addEventListener('paste', async function(e) {
                 // Si el evento ya trae archivos, no interferir
