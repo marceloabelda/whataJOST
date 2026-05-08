@@ -27,6 +27,7 @@ La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script de ini
 - Sobreescribe `HTMLAnchorElement.prototype.click` para capturar descargas programáticas
 - Intercepta `paste` para pegar imágenes del portapapeles
 - Intercepta `drag & drop` y `window.open` para links externos
+- Permite menú contextual nativo en campos editables para corrección ortográfica
 - Monitorea `document.title` para badge de mensajes no leídos
 
 ### Comandos Tauri
@@ -41,3 +42,26 @@ La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script de ini
 - `rfd` v0.16 con backend `xdg-portal` + `wayland` + `tokio` para diálogos de archivo
 - `tauri-plugin-dialog` con feature `xdg-portal` para diálogos de mensaje
 - `webkit2gtk` (Linux) para habilitar corrección ortográfica
+
+## Release
+
+Para publicar una nueva versión:
+
+```bash
+./release.sh <version>
+# Ejemplo: ./release.sh 1.1.34
+```
+
+El script:
+1. Actualiza la versión en `package.json`, `src-tauri/Cargo.toml` y `src-tauri/tauri.conf.json`
+2. Commitea los cambios de versión
+3. Crea y pushea el tag `v<version>`
+4. Ejecuta `cargo update` y `pnpm update`
+5. Buildea con `npx tauri build`
+6. Genera `latest.json` con las firmas de los bundles
+7. Crea la release en GitHub con `gh release create` (incluye `.deb`, `.sig` y `latest.json`)
+
+Requisitos:
+- Estar en la rama `main` sin cambios pendientes
+- Tener `gh` CLI instalado
+- Tener la clave privada del updater en `src-tauri/updater_key`
