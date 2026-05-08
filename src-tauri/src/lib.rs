@@ -210,6 +210,34 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         if scheme == "blob" || scheme == "data" || scheme == "about" {
             return true;
         }
+        // Handle files dropped onto the WebView. WebKitGTK intercepts DnD at the
+        // native level and tries to navigate to a file:// URL instead of firing DOM
+        // drop events. Read the file and inject it into the page ourselves.
+        if scheme == "file" {
+            let path = url.path();
+            let data = match std::fs::read(path) {
+                Ok(d) => d,
+                Err(_) => return false,
+            };
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            let file_name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("archivo");
+            let mime = mime_guess::from_path(path)
+                .first_or_octet_stream()
+                .to_string();
+            let js = format!(
+                "window.__tauriInjectDrop&&window.__tauriInjectDrop({},{},{})",
+                serde_json::to_string(file_name).unwrap(),
+                serde_json::to_string(&b64).unwrap(),
+                serde_json::to_string(&mime).unwrap(),
+            );
+            if let Some(win) = opener.get_webview_window("whatsapp-web") {
+                let _ = win.eval(&js);
+            }
+            return false;
+        }
         let host = url.host_str().unwrap_or("");
         let is_whatsapp = host.ends_with("whatsapp.com")
             || host.ends_with("whatsapp.net")
@@ -419,6 +447,51 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 }
                 setInterval(checkCount, 2500);
             })();
+
+            // --- Drag & drop: prevent WebView from intercepting file drops as navigation ---
+            document.addEventListener('dragover', function(e) { e.preventDefault(); }, false);
+
+            // Bridge: Rust calls this after reading a dropped file (fallback when
+            // WebKitGTK intercepts the native drop and tries to navigate to a file:// URL).
+            // We dispatch a paste event (not a drop event) because WhatsApp Web accepts
+            // synthetic ClipboardEvents but ignores synthetic DragEvents (isTrusted check).
+            window.__tauriInjectDrop = function(fileName, base64Data, mimeType) {
+                try {
+                    const binary = atob(base64Data);
+                    const array = new Uint8Array(binary.length);
+                    for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
+                    const blob = new Blob([array], { type: mimeType || 'application/octet-stream' });
+                    const file = new File([blob], fileName, { type: mimeType || 'application/octet-stream' });
+
+                    const dt = new DataTransfer();
+                    dt.items.add(file);
+
+                    // Dispatch as paste so WhatsApp Web processes the file.
+                    // The capture-phase paste listener above (line ~301) sees files
+                    // in clipboardData and returns early, letting WhatsApp handle it.
+                    let pasteEvent;
+                    try {
+                        pasteEvent = new ClipboardEvent('paste', {
+                            bubbles: true,
+                            cancelable: true,
+                            clipboardData: dt
+                        });
+                    } catch(_) {
+                        pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+                        Object.defineProperty(pasteEvent, 'clipboardData', {
+                            get: function() { return dt; },
+                            configurable: true
+                        });
+                    }
+
+                    // Target the active element (chat input) so WhatsApp Web
+                    // processes the paste in the current conversation.
+                    const target = document.activeElement || document.body;
+                    target.dispatchEvent(pasteEvent);
+                } catch(e) {
+                    console.warn('[whataJOST] drop injection failed:', e);
+                }
+            };
         })();
     "#)
     .build()?;
@@ -754,7 +827,7 @@ fn close_notification(app: AppHandle) {
 }
 
 #[tauri::command]
-fn save_file(data: String, file_name: String) -> Result<String, String> {
+fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&data)
         .map_err(|e| format!("Error al decodificar: {e}"))?;
@@ -769,7 +842,14 @@ fn save_file(data: String, file_name: String) -> Result<String, String> {
                 .map_err(|e| format!("Error al guardar: {e}"))?;
             Ok(p.to_string_lossy().to_string())
         }
-        None => Err("Cancelado".to_string()),
+        None => {
+            let dir = app.path().download_dir()
+                .map_err(|e| format!("Error al obtener directorio: {e}"))?;
+            let fallback = dir.join(&file_name);
+            std::fs::write(&fallback, &bytes)
+                .map_err(|e| format!("Error al guardar: {e}"))?;
+            Ok(fallback.to_string_lossy().to_string())
+        }
     }
 }
 
