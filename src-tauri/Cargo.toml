@@ -21,11 +21,14 @@ tauri-plugin-single-instance = "2"
 tauri-plugin-opener = "2"
 tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-updater = "2"
-tauri-plugin-dialog = "2"
+tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-autostart = "2"
 base64 = "0.22"
-rfd = { version = "0.16", default-features = false }
+rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }
 mime_guess = "2"
+
+[target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
+webkit2gtk = "2"
 
 [profile.release]
 opt-level = 3

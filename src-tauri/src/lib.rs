@@ -3,6 +3,9 @@ use std::sync::Mutex;
 use std::sync::OnceLock;
 use std::time::Duration;
 
+#[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+use webkit2gtk::{WebContextExt, WebViewExt};
+
 use tauri::{
     image::Image,
     menu::{CheckMenuItem, Menu, MenuEvent, MenuItem},
@@ -262,29 +265,61 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 return null;
             };
 
-            // Helper: fetch blob as base64 and invoke save_file
+            // Track blob URLs to avoid fetch race conditions
+            const blobStore = new Map();
+            const origCreateObjectURL = URL.createObjectURL;
+            URL.createObjectURL = function(blob) {
+                const url = origCreateObjectURL.call(URL, blob);
+                blobStore.set(url, blob);
+                return url;
+            };
+            const origRevokeObjectURL = URL.revokeObjectURL;
+            URL.revokeObjectURL = function(url) {
+                setTimeout(() => blobStore.delete(url), 60000);
+                origRevokeObjectURL.call(URL, url);
+            };
+
+            // Helper: convert blob to base64 and invoke save_file
+            const saveBlob = async (blob, fileName) => {
+                const base64 = await new Promise((resolve, reject) => {
+                    const reader = new FileReader();
+                    reader.onload = () => resolve(reader.result.split(',')[1]);
+                    reader.onerror = reject;
+                    reader.readAsDataURL(blob);
+                });
+                await window.__TAURI_INTERNALS__.invoke('save_file', {
+                    data: base64,
+                    fileName: fileName || 'archivo'
+                });
+            };
+
             const downloadBlob = (url, fileName) => {
                 (async () => {
                     try {
-                        const response = await fetch(url);
-                        if (!response.ok) throw new Error('fetch failed');
-                        const blob = await response.blob();
-                        const base64 = await new Promise((resolve, reject) => {
-                            const reader = new FileReader();
-                            reader.onload = () => resolve(reader.result.split(',')[1]);
-                            reader.onerror = reject;
-                            reader.readAsDataURL(blob);
-                        });
-                        await window.__TAURI_INTERNALS__.invoke('save_file', {
-                            data: base64,
-                            fileName: fileName || 'archivo'
-                        });
+                        let blob = blobStore.get(url);
+                        if (!blob) {
+                            const response = await fetch(url);
+                            if (!response.ok) throw new Error('fetch failed');
+                            blob = await response.blob();
+                        }
+                        await saveBlob(blob, fileName);
                     } catch(e) {
                         console.warn('[whataJOST] download failed:', e);
                     }
                 })();
             };
 
+            // Catch programmatic anchor clicks (WhatsApp Web creates <a> elements and calls .click())
+            const origAnchorClick = HTMLAnchorElement.prototype.click;
+            HTMLAnchorElement.prototype.click = function() {
+                if (this.download && this.href && this.href.startsWith('blob:')) {
+                    downloadBlob(this.href, this.download);
+                    return;
+                }
+                return origAnchorClick.call(this);
+            };
+
+            // Catch user clicks on <a> elements (for anchors already in the DOM)
             document.addEventListener('click', function(e) {
                 for (const node of e.composedPath()) {
                     if (node.tagName === 'A' && node.href) {
@@ -495,6 +530,18 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         })();
     "#)
     .build()?;
+
+    // Enable spellcheck on linux webviews
+    #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
+    {
+        let _ = window.with_webview(|w| {
+            let webview = w.inner();
+            if let Some(context) = webview.context() {
+                context.set_spell_checking_enabled(true);
+                context.set_spell_checking_languages(&["es_ES", "en_US"]);
+            }
+        });
+    }
 
     let win_close = window.clone();
     window.on_window_event(move |event| {
