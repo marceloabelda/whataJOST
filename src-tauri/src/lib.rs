@@ -892,7 +892,10 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
         None => {
             let dir = app.path().download_dir()
                 .map_err(|e| format!("Error al obtener directorio: {e}"))?;
-            let fallback = dir.join(&file_name);
+            let subdir = dir.join("WhataJOST");
+            std::fs::create_dir_all(&subdir)
+                .map_err(|e| format!("Error al crear directorio: {e}"))?;
+            let fallback = subdir.join(&file_name);
             std::fs::write(&fallback, &bytes)
                 .map_err(|e| format!("Error al guardar: {e}"))?;
             Ok(fallback.to_string_lossy().to_string())
