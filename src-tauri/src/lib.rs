@@ -131,11 +131,45 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                             }
 
                             #[cfg(target_os = "linux")]
-                            let install_result = std::process::Command::new("pkexec")
-                                .arg("dpkg")
-                                .arg("-i")
-                                .arg(&tmp)
-                                .status();
+                            let install_result = {
+                                let mut result = std::process::Command::new("pkexec")
+                                    .arg("dpkg")
+                                    .arg("-i")
+                                    .arg(&tmp)
+                                    .status();
+                                // Fallback: try graphical sudo if pkexec not found
+                                if result.is_err() {
+                                    let password = std::process::Command::new("zenity")
+                                        .args(["--password", "--title", "whataJOST - Instalar actualización"])
+                                        .output()
+                                        .ok()
+                                        .and_then(|out| String::from_utf8(out.stdout).ok())
+                                        .map(|s| s.trim().to_string());
+                                    if let Some(pass) = password {
+                                        result = std::process::Command::new("sudo")
+                                            .arg("-S")
+                                            .arg("dpkg")
+                                            .arg("-i")
+                                            .arg(&tmp)
+                                            .stdin(std::process::Stdio::piped())
+                                            .spawn()
+                                            .and_then(|mut child| {
+                                                use std::io::Write;
+                                                let _ = child.stdin.as_mut().unwrap().write_all(pass.as_bytes());
+                                                child.wait()
+                                            });
+                                    }
+                                }
+                                // Last fallback: plain sudo (needs terminal)
+                                if result.is_err() {
+                                    result = std::process::Command::new("sudo")
+                                        .arg("dpkg")
+                                        .arg("-i")
+                                        .arg(&tmp)
+                                        .status();
+                                }
+                                result
+                            };
 
                             #[cfg(target_os = "windows")]
                             let install_result = std::process::Command::new("msiexec")
@@ -341,14 +375,33 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 }
             }, true);
 
-            // Allow native context menu on editable fields (spellcheck suggestions)
-            document.addEventListener('contextmenu', function(e) {
-                const el = e.target.nodeType === Node.TEXT_NODE
+            // Allow native context menu on editable fields for spellcheck suggestions.
+            // WhatsApp Web intercepts right-clicks via contextmenu/mousedown/mouseup
+            // to show its formatting menu. We stop those events in capture phase so
+            // the native WebKitGTK menu (with spellcheck) can appear instead.
+            const isEditable = (el) => {
+                if (!el) return false;
+                return el.isContentEditable
+                    || el.tagName === 'INPUT'
+                    || el.tagName === 'TEXTAREA';
+            };
+            const resolveTarget = (e) =>
+                e.target && e.target.nodeType === Node.TEXT_NODE
                     ? e.target.parentElement
                     : e.target;
-                if (el && (el.isContentEditable
-                    || el.tagName === 'INPUT'
-                    || el.tagName === 'TEXTAREA')) {
+
+            document.addEventListener('contextmenu', function(e) {
+                if (isEditable(resolveTarget(e))) {
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+            document.addEventListener('mousedown', function(e) {
+                if (e.button === 2 && isEditable(resolveTarget(e))) {
+                    e.stopImmediatePropagation();
+                }
+            }, true);
+            document.addEventListener('mouseup', function(e) {
+                if (e.button === 2 && isEditable(resolveTarget(e))) {
                     e.stopImmediatePropagation();
                 }
             }, true);
