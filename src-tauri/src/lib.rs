@@ -383,7 +383,10 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                         }
                         await saveBlob(blob, fileName);
                     } catch(e) {
-                        console.warn('[whataJOST] download failed:', e);
+                        window.__TAURI_INTERNALS__.invoke('log_js', {
+                            level: 'error',
+                            message: 'Error al descargar archivo ' + fileName + ': ' + (e.message || e)
+                        });
                     }
                 })();
             };
@@ -463,7 +466,12 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 if (window.__TAURI_INTERNALS__) {
                     try {
                         b64 = await window.__TAURI_INTERNALS__.invoke('read_clipboard_image');
-                    } catch(err) {}
+                    } catch(err) {
+                        window.__TAURI_INTERNALS__.invoke('log_js', {
+                            level: 'error',
+                            message: 'Error al leer imagen del portapapeles: ' + (err.message || err)
+                        });
+                    }
                 }
                 if (!b64 && window.__tauriClipboardImage) {
                     b64 = window.__tauriClipboardImage;
@@ -634,7 +642,10 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                     const target = document.activeElement || document.body;
                     target.dispatchEvent(pasteEvent);
                 } catch(e) {
-                    console.warn('[whataJOST] drop injection failed:', e);
+                    window.__TAURI_INTERNALS__.invoke('log_js', {
+                        level: 'error',
+                        message: 'Error al inyectar archivo arrastrado: ' + (e.message || e)
+                    });
                 }
             };
         })();
@@ -885,12 +896,17 @@ fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
 fn read_clipboard_image(app: AppHandle) -> Option<String> {
     if let Some(Some(tool)) = CLIPBOARD_TOOL.get() {
         if let Some(data) = read_clipboard_image_raw(tool) {
+            log_message(&app, LogLevel::Info, format!("Imagen leída del portapapeles ({})", tool));
             return Some(base64_encode_bytes(&data));
         }
+        // Tool cached but no image in clipboard — normal, don't log
+        return None;
     }
     for tool in ["wl-paste", "xclip"] {
         if let Some(data) = read_clipboard_image_raw(tool) {
             let _ = CLIPBOARD_TOOL.set(Some(tool));
+            log_message(&app, LogLevel::Info, format!("Herramienta de portapapeles detectada: {}", tool));
+            log_message(&app, LogLevel::Info, "Imagen leída del portapapeles");
             return Some(base64_encode_bytes(&data));
         }
     }
@@ -1079,6 +1095,16 @@ fn clear_logs(state: State<'_, LogState>) {
 }
 
 #[tauri::command]
+fn log_js(app: AppHandle, level: String, message: String) {
+    let lvl = match level.as_str() {
+        "warn" => LogLevel::Warn,
+        "error" => LogLevel::Error,
+        _ => LogLevel::Info,
+    };
+    log_message(&app, lvl, message);
+}
+
+#[tauri::command]
 fn open_logs(app: AppHandle) {
     if let Some(existing) = app.get_webview_window("logs") {
         let _ = existing.set_focus();
@@ -1140,7 +1166,8 @@ pub fn run() {
             update_unread_count,
             get_logs,
             clear_logs,
-            open_logs
+            open_logs,
+            log_js
         ])
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());
