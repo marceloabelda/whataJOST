@@ -461,6 +461,12 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                     return;
                 }
 
+                // Notificar a Rust que se interceptó un paste
+                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                    level: 'info',
+                    message: 'Evento paste interceptado en WhatsApp Web'
+                });
+
                 // Obtener imagen del portapapeles via IPC o variable inyectada por Rust
                 let b64 = null;
                 if (window.__TAURI_INTERNALS__) {
@@ -894,24 +900,34 @@ fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
 #[cfg(target_os = "linux")]
 #[tauri::command]
 fn read_clipboard_image(app: AppHandle) -> Option<String> {
+    log_message(&app, LogLevel::Info, "Solicitud de lectura de portapapeles");
     if let Some(Some(tool)) = CLIPBOARD_TOOL.get() {
-        if let Some(data) = read_clipboard_image_raw(tool) {
-            log_message(&app, LogLevel::Info, format!("Imagen leída del portapapeles ({})", tool));
-            return Some(base64_encode_bytes(&data));
+        match read_clipboard_image_raw(tool) {
+            Some(data) => {
+                log_message(&app, LogLevel::Info, format!("Imagen leída del portapapeles ({})", tool));
+                return Some(base64_encode_bytes(&data));
+            }
+            None => {
+                log_message(&app, LogLevel::Info, format!("{} disponible pero no hay imagen PNG en el portapapeles", tool));
+                return None;
+            }
         }
-        // Tool cached but no image in clipboard — normal, don't log
-        return None;
     }
     for tool in ["wl-paste", "xclip"] {
-        if let Some(data) = read_clipboard_image_raw(tool) {
-            let _ = CLIPBOARD_TOOL.set(Some(tool));
-            log_message(&app, LogLevel::Info, format!("Herramienta de portapapeles detectada: {}", tool));
-            log_message(&app, LogLevel::Info, "Imagen leída del portapapeles");
-            return Some(base64_encode_bytes(&data));
+        match read_clipboard_image_raw(tool) {
+            Some(data) => {
+                let _ = CLIPBOARD_TOOL.set(Some(tool));
+                log_message(&app, LogLevel::Info, format!("Herramienta de portapapeles detectada: {}", tool));
+                log_message(&app, LogLevel::Info, "Imagen leída del portapapeles");
+                return Some(base64_encode_bytes(&data));
+            }
+            None => {
+                log_message(&app, LogLevel::Info, format!("No se pudo leer imagen con {} (no disponible o sin imagen PNG)", tool));
+            }
         }
     }
     let _ = CLIPBOARD_TOOL.set(None);
-    log_message(&app, LogLevel::Warn, "No se pudo leer la imagen del portapapeles. Verificá que tengas xclip o wl-clipboard instalado.");
+    log_message(&app, LogLevel::Warn, "No se encontró herramienta de portapapeles funcional. Instalá xclip o wl-clipboard.");
     None
 }
 
@@ -1027,7 +1043,9 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
                     log_message(&app, LogLevel::Error, &msg);
                     msg
                 })?;
-            Ok(p.to_string_lossy().to_string())
+            let path_str = p.to_string_lossy().to_string();
+            log_message(&app, LogLevel::Info, format!("Archivo guardado: {}", path_str));
+            Ok(path_str)
         }
         None => {
             let dir = app.path().download_dir()
