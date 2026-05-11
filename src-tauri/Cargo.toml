@@ -23,6 +23,7 @@ tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-updater = "2"
 tauri-plugin-dialog = { version = "2", default-features = false, features = ["xdg-portal"] }
 tauri-plugin-autostart = "2"
+serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }
 mime_guess = "2"

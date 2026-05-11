@@ -1,7 +1,9 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
-use std::time::Duration;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+use serde::Serialize;
 
 #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
 use webkit2gtk::{WebContextExt, WebViewExt};
@@ -19,6 +21,44 @@ use tauri_plugin_updater::UpdaterExt;
 use base64::Engine;
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons, MessageDialogKind};
 
+#[derive(Debug, Clone, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+enum LogLevel {
+    Info,
+    Warn,
+    Error,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct LogEntry {
+    timestamp: String,
+    level: LogLevel,
+    message: String,
+}
+
+struct LogState(Arc<Mutex<Vec<LogEntry>>>);
+
+fn format_timestamp() -> String {
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_secs();
+    let h = (secs / 3600) % 24;
+    let m = (secs / 60) % 60;
+    let s = secs % 60;
+    format!("{:02}:{:02}:{:02}", h, m, s)
+}
+
+fn log_message(app: &AppHandle, level: LogLevel, message: impl Into<String>) {
+    let state = app.state::<LogState>();
+    let mut logs = state.0.lock().unwrap();
+    logs.push(LogEntry {
+        timestamp: format_timestamp(),
+        level,
+        message: message.into(),
+    });
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("whatsapp-web") {
         let _ = window.unminimize();
@@ -26,6 +66,8 @@ fn show_window(app: &AppHandle) {
         let _ = window.show();
         let _ = window.set_focus();
         let _ = window.set_always_on_top(false);
+    } else {
+        log_message(app, LogLevel::Error, "No se encontró la ventana de WhatsApp");
     }
 }
 
@@ -254,7 +296,10 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             let path = url.path();
             let data = match std::fs::read(path) {
                 Ok(d) => d,
-                Err(_) => return false,
+                Err(e) => {
+                    log_message(&opener, LogLevel::Error, format!("No se pudo leer el archivo arrastrado: {e}"));
+                    return false;
+                }
             };
             let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
             let file_name = std::path::Path::new(path)
@@ -637,6 +682,11 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                             escaped_name, b64
                         ));
                     }
+                } else {
+                    log_message(&w.app_handle(), LogLevel::Error, format!(
+                        "No se pudo leer el archivo arrastrado: {}",
+                        path.display()
+                    ));
                 }
             }
             files_json.push(']');
@@ -832,7 +882,7 @@ fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
 
 #[cfg(target_os = "linux")]
 #[tauri::command]
-fn read_clipboard_image() -> Option<String> {
+fn read_clipboard_image(app: AppHandle) -> Option<String> {
     if let Some(Some(tool)) = CLIPBOARD_TOOL.get() {
         if let Some(data) = read_clipboard_image_raw(tool) {
             return Some(base64_encode_bytes(&data));
@@ -845,12 +895,13 @@ fn read_clipboard_image() -> Option<String> {
         }
     }
     let _ = CLIPBOARD_TOOL.set(None);
+    log_message(&app, LogLevel::Warn, "No se pudo leer la imagen del portapapeles. Verificá que tengas xclip o wl-clipboard instalado.");
     None
 }
 
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
-fn read_clipboard_image() -> Option<String> {
+fn read_clipboard_image(_app: AppHandle) -> Option<String> {
     None
 }
 
@@ -942,7 +993,11 @@ fn close_notification(app: AppHandle) {
 fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, String> {
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&data)
-        .map_err(|e| format!("Error al decodificar: {e}"))?;
+        .map_err(|e| {
+            let msg = format!("Error al decodificar archivo: {e}");
+            log_message(&app, LogLevel::Error, &msg);
+            msg
+        })?;
 
     let path = rfd::FileDialog::new()
         .set_file_name(&file_name)
@@ -951,18 +1006,34 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
     match path {
         Some(p) => {
             std::fs::write(&p, &bytes)
-                .map_err(|e| format!("Error al guardar: {e}"))?;
+                .map_err(|e| {
+                    let msg = format!("Error al guardar archivo: {e}");
+                    log_message(&app, LogLevel::Error, &msg);
+                    msg
+                })?;
             Ok(p.to_string_lossy().to_string())
         }
         None => {
             let dir = app.path().download_dir()
-                .map_err(|e| format!("Error al obtener directorio: {e}"))?;
+                .map_err(|e| {
+                    let msg = format!("Error al obtener directorio de descargas: {e}");
+                    log_message(&app, LogLevel::Error, &msg);
+                    msg
+                })?;
             let subdir = dir.join("WhataJOST");
             std::fs::create_dir_all(&subdir)
-                .map_err(|e| format!("Error al crear directorio: {e}"))?;
+                .map_err(|e| {
+                    let msg = format!("Error al crear directorio: {e}");
+                    log_message(&app, LogLevel::Error, &msg);
+                    msg
+                })?;
             let fallback = subdir.join(&file_name);
             std::fs::write(&fallback, &bytes)
-                .map_err(|e| format!("Error al guardar: {e}"))?;
+                .map_err(|e| {
+                    let msg = format!("Error al guardar archivo: {e}");
+                    log_message(&app, LogLevel::Error, &msg);
+                    msg
+                })?;
             Ok(fallback.to_string_lossy().to_string())
         }
     }
@@ -985,7 +1056,7 @@ fn update_unread_count(app: AppHandle, badge_state: State<'_, TrayBadgeState>, c
             .map(|rgba| Image::new_owned(rgba, 64, 64))
     };
     if let Err(e) = tray.set_icon(icon) {
-        eprintln!("[whataJOST] Failed to update tray icon: {e}");
+        log_message(&app, LogLevel::Error, format!("Error al actualizar icono del tray: {e}"));
     }
 }
 
@@ -994,6 +1065,55 @@ fn open_whatsapp(app: AppHandle) {
     show_window(&app);
     if let Some(win) = app.get_webview_window("notification") {
         let _ = win.close();
+    }
+}
+
+#[tauri::command]
+fn get_logs(state: State<'_, LogState>) -> Vec<LogEntry> {
+    state.0.lock().unwrap().clone()
+}
+
+#[tauri::command]
+fn clear_logs(state: State<'_, LogState>) {
+    state.0.lock().unwrap().clear();
+}
+
+#[tauri::command]
+fn open_logs(app: AppHandle) {
+    if let Some(existing) = app.get_webview_window("logs") {
+        let _ = existing.set_focus();
+        return;
+    }
+
+    let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let pos = monitor.position();
+        let logical_w = size.width as f64 / scale;
+        let logical_h = size.height as f64 / scale;
+        let win_w = 650.0f64;
+        let win_h = 420.0f64;
+        (
+            pos.x as f64 / scale + (logical_w - win_w) / 2.0,
+            pos.y as f64 / scale + (logical_h - win_h) / 2.0,
+        )
+    } else {
+        (100.0f64, 100.0f64)
+    };
+
+    let result = WebviewWindowBuilder::new(
+        &app,
+        "logs",
+        WebviewUrl::App("logs.html".into()),
+    )
+    .title("Logs - WhataJOST")
+    .inner_size(650.0, 420.0)
+    .position(x, y)
+    .resizable(true)
+    .build();
+
+    if let Err(e) = result {
+        log_message(&app, LogLevel::Error, format!("Error al abrir ventana de logs: {e}"));
     }
 }
 
@@ -1017,11 +1137,16 @@ pub fn run() {
             open_whatsapp,
             read_clipboard_image,
             save_file,
-            update_unread_count
+            update_unread_count,
+            get_logs,
+            clear_logs,
+            open_logs
         ])
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());
             app.manage(NotificationPopupState(Mutex::new(notifications_enabled)));
+            app.manage(LogState(Arc::new(Mutex::new(Vec::new()))));
+            log_message(app.handle(), LogLevel::Info, "WhataJOST iniciado");
 
             create_whatsapp_window(app.handle())?;
 
@@ -1044,10 +1169,12 @@ pub fn run() {
                 CheckMenuItem::with_id(app, "toggle_notify", "Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
             let update_item =
                 MenuItem::with_id(app, "update", "Buscar actualización", true, None::<&str>)?;
+            let logs_item =
+                MenuItem::with_id(app, "logs", "Ver logs", true, None::<&str>)?;
             let quit_item = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
             let menu = Menu::with_items(
                 app,
-                &[&show_item, &autostart_item, &notify_item, &update_item, &quit_item],
+                &[&show_item, &autostart_item, &notify_item, &update_item, &logs_item, &quit_item],
             )?;
 
             let icon = Image::from_bytes(include_bytes!("../../public/tray.png"))?;
@@ -1078,6 +1205,38 @@ pub fn run() {
                             let _ = app.autolaunch().disable();
                         } else {
                             let _ = app.autolaunch().enable();
+                        }
+                    }
+                    "logs" => {
+                        if let Some(existing) = app.get_webview_window("logs") {
+                            let _ = existing.set_focus();
+                        } else {
+                            let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+                                let scale = monitor.scale_factor();
+                                let size = monitor.size();
+                                let pos = monitor.position();
+                                let logical_w = size.width as f64 / scale;
+                                let logical_h = size.height as f64 / scale;
+                                (
+                                    pos.x as f64 / scale + (logical_w - 650.0) / 2.0,
+                                    pos.y as f64 / scale + (logical_h - 420.0) / 2.0,
+                                )
+                            } else {
+                                (100.0f64, 100.0f64)
+                            };
+                            let result = WebviewWindowBuilder::new(
+                                app,
+                                "logs",
+                                WebviewUrl::App("logs.html".into()),
+                            )
+                            .title("Logs - WhataJOST")
+                            .inner_size(650.0, 420.0)
+                            .position(x, y)
+                            .resizable(true)
+                            .build();
+                            if let Err(e) = result {
+                                log_message(app, LogLevel::Error, format!("Error al abrir ventana de logs: {e}"));
+                            }
                         }
                     }
                     _ => {}
