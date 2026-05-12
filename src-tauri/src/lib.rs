@@ -180,13 +180,27 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
 
                             #[cfg(target_os = "linux")]
                             let install_result = {
+                                // Devuelve true si el resultado es error O si el exit code es distinto de 0
+                                let failed = |r: &std::io::Result<std::process::ExitStatus>| {
+                                    r.as_ref().map(|s| !s.success()).unwrap_or(true)
+                                };
+
+                                // Intento 1: pkexec apt install (más compatible con Ubuntu moderno)
                                 let mut result = std::process::Command::new("pkexec")
-                                    .arg("dpkg")
-                                    .arg("-i")
+                                    .args(["apt", "install", "--yes"])
                                     .arg(&tmp)
                                     .status();
-                                // Fallback: try graphical sudo if pkexec not found
-                                if result.is_err() {
+
+                                // Intento 2: pkexec dpkg -i
+                                if failed(&result) {
+                                    result = std::process::Command::new("pkexec")
+                                        .args(["dpkg", "-i"])
+                                        .arg(&tmp)
+                                        .status();
+                                }
+
+                                // Intento 3: zenity para pedir contraseña + sudo -S
+                                if failed(&result) {
                                     let password = std::process::Command::new("zenity")
                                         .args(["--password", "--title", "whataJOST - Instalar actualización"])
                                         .output()
@@ -195,9 +209,7 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                         .map(|s| s.trim().to_string());
                                     if let Some(pass) = password {
                                         result = std::process::Command::new("sudo")
-                                            .arg("-S")
-                                            .arg("dpkg")
-                                            .arg("-i")
+                                            .args(["-S", "dpkg", "-i"])
                                             .arg(&tmp)
                                             .stdin(std::process::Stdio::piped())
                                             .spawn()
@@ -208,14 +220,24 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                             });
                                     }
                                 }
-                                // Last fallback: plain sudo (needs terminal)
-                                if result.is_err() {
-                                    result = std::process::Command::new("sudo")
-                                        .arg("dpkg")
-                                        .arg("-i")
+
+                                // Intento 4: abrir el .deb con el instalador gráfico del sistema
+                                if failed(&result) {
+                                    let _ = std::process::Command::new("xdg-open")
                                         .arg(&tmp)
-                                        .status();
+                                        .spawn();
+                                    h.dialog()
+                                        .message(format!(
+                                            "Se abrió el instalador del sistema con el paquete.\nCompletá la instalación manualmente y reiniciá whataJOST.\n\nArchivo: {}",
+                                            tmp.display()
+                                        ))
+                                        .title("whataJOST - Actualización")
+                                        .kind(MessageDialogKind::Info)
+                                        .buttons(MessageDialogButtons::Ok)
+                                        .show(|_| {});
+                                    return;
                                 }
+
                                 result
                             };
 
