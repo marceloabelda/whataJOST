@@ -36,6 +36,12 @@ struct LogEntry {
     message: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct ClipboardImage {
+    data: String,
+    mime_type: String,
+}
+
 struct LogState(Arc<Mutex<Vec<LogEntry>>>);
 
 fn format_timestamp() -> String {
@@ -339,8 +345,21 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
 
             window.open = function(url) {
                 if (url) try {
+                    if (url.startsWith('blob:')) {
+                        window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                            level: 'info',
+                            message: 'window.open con blob URL interceptado, descargando'
+                        });
+                        downloadBlob(url, 'archivo');
+                        return null;
+                    }
                     if (!isWhatsApp(url)) { window.location.href = url; return null; }
-                } catch(_) {}
+                } catch(e) {
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                        level: 'error',
+                        message: 'Error en window.open: ' + (e.message || e)
+                    });
+                }
                 return null;
             };
 
@@ -458,41 +477,54 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             document.addEventListener('paste', async function(e) {
                 // Si el evento ya trae archivos, no interferir
                 if (e.clipboardData && e.clipboardData.files && e.clipboardData.files.length > 0) {
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                        level: 'info',
+                        message: 'Paste con archivos del sistema (' + e.clipboardData.files.length + '), dejando pasar a WhatsApp'
+                    });
                     return;
                 }
 
-                // Notificar a Rust que se interceptó un paste
+                const clipTypes = e.clipboardData ? Array.from(e.clipboardData.types || []) : [];
                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                     level: 'info',
-                    message: 'Evento paste interceptado en WhatsApp Web'
+                    message: 'Evento paste interceptado. Tipos en portapapeles: ' + (clipTypes.join(', ') || '(vacío)')
                 });
 
-                // Obtener imagen del portapapeles via IPC o variable inyectada por Rust
-                let b64 = null;
+                // Obtener imagen del portapapeles via IPC
+                let clipImage = null;
                 if (window.__TAURI_INTERNALS__) {
                     try {
-                        b64 = await window.__TAURI_INTERNALS__.invoke('read_clipboard_image');
+                        clipImage = await window.__TAURI_INTERNALS__.invoke('read_clipboard_image');
                     } catch(err) {
                         window.__TAURI_INTERNALS__.invoke('log_js', {
                             level: 'error',
-                            message: 'Error al leer imagen del portapapeles: ' + (err.message || err)
+                            message: 'Error al invocar read_clipboard_image: ' + (err.message || err)
                         });
                     }
                 }
-                if (!b64 && window.__tauriClipboardImage) {
-                    b64 = window.__tauriClipboardImage;
+                if (!clipImage && window.__tauriClipboardImage) {
+                    clipImage = { data: window.__tauriClipboardImage, mime_type: 'image/png' };
                 }
-                if (!b64) return; // no hay imagen en el portapapeles
+                if (!clipImage) {
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                        level: 'warn',
+                        message: 'No hay imagen en el portapapeles (tipos JS: ' + (clipTypes.join(', ') || '(vacío)') + ')'
+                    });
+                    return;
+                }
 
                 e.preventDefault();
                 e.stopPropagation();
 
                 // Convertir base64 a File
+                const b64 = clipImage.data;
+                const mimeType = clipImage.mime_type || 'image/png';
                 const binary = atob(b64);
                 const array = new Uint8Array(binary.length);
                 for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
-                const blob = new Blob([array], { type: 'image/png' });
-                const file = new File([blob], 'clipboard.png', { type: 'image/png' });
+                const blob = new Blob([array], { type: mimeType });
+                const ext = mimeType.split('/')[1] || 'png';
+                const file = new File([blob], 'clipboard.' + ext, { type: mimeType });
 
                 // Crear DataTransfer con el archivo y despachar un paste sintético.
                 // Así WhatsApp Web lo procesa como imagen normal (no como sticker,
@@ -884,56 +916,90 @@ fn generate_badged_icon(base_rgba: &[u8], count: u32) -> Option<Vec<u8>> {
 }
 
 #[cfg(target_os = "linux")]
-fn read_clipboard_image_raw(tool: &str) -> Option<Vec<u8>> {
-    let (cmd, args): (&str, &[&str]) = match tool {
-        "wl-paste" => ("wl-paste", &["--type", "image/png", "--no-newline"]),
-        _ => ("xclip", &["-selection", "clipboard", "-t", "image/png", "-o"]),
+fn read_clipboard_image_raw(tool: &str) -> Option<(Vec<u8>, &'static str)> {
+    const MIME_TYPES: &[&str] = &["image/png", "image/jpeg", "image/bmp", "image/webp"];
+    for &mime in MIME_TYPES {
+        let output = match tool {
+            "wl-paste" => std::process::Command::new("wl-paste")
+                .args(["--type", mime, "--no-newline"])
+                .output(),
+            _ => std::process::Command::new("xclip")
+                .args(["-selection", "clipboard", "-t", mime, "-o"])
+                .output(),
+        };
+        if let Some(out) = output.ok().filter(|o| o.status.success() && !o.stdout.is_empty()) {
+            return Some((out.stdout, mime));
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn list_clipboard_types(tool: &str) -> String {
+    let output = match tool {
+        "wl-paste" => std::process::Command::new("wl-paste").args(["--list-types"]).output(),
+        _ => std::process::Command::new("xclip")
+            .args(["-selection", "clipboard", "-t", "TARGETS", "-o"])
+            .output(),
     };
-    std::process::Command::new(cmd)
-        .args(args)
-        .output()
+    output
         .ok()
-        .filter(|out| out.status.success() && !out.stdout.is_empty())
-        .map(|out| out.stdout)
+        .filter(|o| o.status.success())
+        .and_then(|o| String::from_utf8(o.stdout).ok())
+        .map(|s| {
+            s.lines()
+                .map(|l| l.trim())
+                .filter(|l| !l.is_empty())
+                .collect::<Vec<_>>()
+                .join(", ")
+        })
+        .unwrap_or_else(|| "(no disponible)".to_string())
 }
 
 #[cfg(target_os = "linux")]
 #[tauri::command]
-fn read_clipboard_image(app: AppHandle) -> Option<String> {
+fn read_clipboard_image(app: AppHandle) -> Option<ClipboardImage> {
     log_message(&app, LogLevel::Info, "Solicitud de lectura de portapapeles");
     if let Some(Some(tool)) = CLIPBOARD_TOOL.get() {
         match read_clipboard_image_raw(tool) {
-            Some(data) => {
-                log_message(&app, LogLevel::Info, format!("Imagen leída del portapapeles ({})", tool));
-                return Some(base64_encode_bytes(&data));
+            Some((data, mime)) => {
+                log_message(&app, LogLevel::Info, format!("Imagen leída del portapapeles ({}, {})", tool, mime));
+                return Some(ClipboardImage { data: base64_encode_bytes(&data), mime_type: mime.to_string() });
             }
             None => {
-                log_message(&app, LogLevel::Info, format!("{} disponible pero no hay imagen PNG en el portapapeles", tool));
+                let types = list_clipboard_types(tool);
+                log_message(&app, LogLevel::Warn, format!(
+                    "{} disponible pero no hay imagen en el portapapeles. Tipos disponibles: {}",
+                    tool, types
+                ));
                 return None;
             }
         }
     }
     for tool in ["wl-paste", "xclip"] {
         match read_clipboard_image_raw(tool) {
-            Some(data) => {
+            Some((data, mime)) => {
                 let _ = CLIPBOARD_TOOL.set(Some(tool));
-                log_message(&app, LogLevel::Info, format!("Herramienta de portapapeles detectada: {}", tool));
-                log_message(&app, LogLevel::Info, "Imagen leída del portapapeles");
-                return Some(base64_encode_bytes(&data));
+                log_message(&app, LogLevel::Info, format!("Herramienta detectada: {}. Imagen leída ({})", tool, mime));
+                return Some(ClipboardImage { data: base64_encode_bytes(&data), mime_type: mime.to_string() });
             }
             None => {
-                log_message(&app, LogLevel::Info, format!("No se pudo leer imagen con {} (no disponible o sin imagen PNG)", tool));
+                let types = list_clipboard_types(tool);
+                log_message(&app, LogLevel::Info, format!(
+                    "{}: no hay imagen en el portapapeles. Tipos disponibles: {}",
+                    tool, types
+                ));
             }
         }
     }
     let _ = CLIPBOARD_TOOL.set(None);
-    log_message(&app, LogLevel::Warn, "No se encontró herramienta de portapapeles funcional. Instalá xclip o wl-clipboard.");
+    log_message(&app, LogLevel::Warn, "No se encontró herramienta de portapapeles (wl-paste/xclip). Instalá wl-clipboard o xclip.");
     None
 }
 
 #[cfg(not(target_os = "linux"))]
 #[tauri::command]
-fn read_clipboard_image(_app: AppHandle) -> Option<String> {
+fn read_clipboard_image(_app: AppHandle) -> Option<ClipboardImage> {
     None
 }
 
