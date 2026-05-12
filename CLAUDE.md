@@ -19,29 +19,61 @@ Para cada tarea, seguí estos pasos en orden:
 - `src-tauri/tauri.conf.json` — Configuración de Tauri
 - `latest.json` — Metadata del auto-updater
 
-### Injected script
+### Script inyectado (`initialization_script` en `create_whatsapp_window`)
 
-La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script de inicialización inyectado que:
-- Intercepta clicks en `<a download>` y `<a blob:>` para guardar archivos via `save_file`
-- Rastrea blobs con `URL.createObjectURL`/`revokeObjectURL`
-- Sobreescribe `HTMLAnchorElement.prototype.click` para capturar descargas programáticas
-- Intercepta `paste` para pegar imágenes del portapapeles
-- Intercepta `drag & drop` y `window.open` para links externos
-- Permite menú contextual nativo en campos editables para corrección ortográfica
-- Monitorea `document.title` para badge de mensajes no leídos
+La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script inyectado antes de que cargue la página. El script:
 
-### Comandos Tauri
+- **Descargas**: sobreescribe `HTMLAnchorElement.prototype.click` y escucha clicks en `<a download blob:>` para invocar `save_file` vía IPC; rastrea blobs con `URL.createObjectURL`/`revokeObjectURL` (blobStore) para evitar race conditions tras `revokeObjectURL`
+- **Paste de imágenes** (lógica sincrónica antes de cualquier `await`):
+  1. Si `clipboardData.files.length > 0` → deja pasar a WhatsApp (archivos del SO)
+  2. Si `clipboardData.items` tiene un item `image/*` → para el evento y lo procesa directo (WebKit lo expone nativamente)
+  3. Si `clipboardData.types` contiene `text/plain` / `text/html` / `text/rtf` → deja pasar a WhatsApp (texto)
+  4. Sin texto/archivos/imagen visible → para el evento con `stopImmediatePropagation()` *antes* del `await`, luego invoca `read_clipboard_image` (IPC → `wl-paste` / `xclip`) y despacha un `ClipboardEvent` sintético con el archivo resultado
+- **Drag & drop**: intercepta `dragover`/`drop` y despacha paste sintético; `on_navigation` lee archivos `file://` arrastrados desde el SO y los inyecta vía `window.__tauriInjectDrop`
+- **Links externos**: intercepta `window.open` y clicks en `<a>` no-WhatsApp para abrir en el browser del SO
+- **Menú contextual**: permite el menú nativo de WebKitGTK en campos editables (corrección ortográfica) bloqueando los listeners de WhatsApp en capture phase
+- **Badge no leídos**: observa `document.title` con `MutationObserver` + polling y llama `update_unread_count`
+- **Notificaciones**: reemplaza `window.Notification` con invocaciones a `show_notification` (IPC)
 
-- `save_file(data, file_name)` — Abre diálogo nativo `rfd::FileDialog` y guarda archivo
-- `update_unread_count(count)` — Actualiza badge en el ícono de bandeja
-- `read_clipboard_image` — Lee imagen del portapapeles (Linux)
-- `show_notification(title, body)` — Muestra notificación toast nativa
+### Comandos Tauri (IPC)
+
+| Comando | Descripción |
+|---|---|
+| `save_file(data, file_name)` | Abre `rfd::FileDialog`; si el diálogo no aparece (xdg-portal), guarda en `~/Downloads/WhataJOST/` y lo registra en logs |
+| `read_clipboard_image` | Lee imagen del portapapeles del sistema con `wl-paste` o `xclip` (detecta herramienta disponible con `OnceLock`) |
+| `update_unread_count(count)` | Renderiza badge numérico sobre el ícono de bandeja (pixel art en RGBA, sin librerías de imágenes) |
+| `show_notification(title, body)` | Abre ventana `notification` (HTML transparente, always-on-top) que se auto-cierra a los 5,5 s |
+| `close_notification` | Cierra la ventana de notificación |
+| `open_whatsapp` | Muestra y enfoca la ventana principal |
+| `log_js(level, message)` | Recibe logs del script JS y los agrega al buffer en memoria |
+| `get_logs` | Devuelve todos los logs del buffer (usada por `logs.html`) |
+| `clear_logs` | Vacía el buffer de logs |
+| `open_logs` | Abre la ventana del visor de logs centrada en pantalla |
+
+### Capabilities (IPC por ventana)
+
+| Archivo | Ventana | Permisos |
+|---|---|---|
+| `default.json` | `main` (oculta, 1×1 px) | `core`, `opener`, `updater`, `dialog`, `autostart` |
+| `whatsapp-notification.json` | `whatsapp-web` (remota: `*.whatsapp.com`, `*.whatsapp.net`) | `core:default`, `clipboard-manager:allow-read-image` |
+| `logs-window.json` | `logs` | `core:default` |
+| `notification-window.json` | `notification` | `core:default` |
+
+La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la URL coincide con los patrones de `remote.urls`. Los comandos definidos en `invoke_handler!` no requieren permisos de plugin individuales.
+
+### Ventanas HTML (`public/`)
+
+- `logs.html` — Visor de logs en tiempo real (polling 2 s a `get_logs`); muestra error explícito si IPC no está disponible
+- `notification.html` — Toast de notificación transparente (se auto-cierra)
+- `index.html` — Página mínima para la ventana `main` (oculta)
 
 ## Key dependencies
 
-- `rfd` v0.16 con backend `xdg-portal` + `wayland` + `tokio` para diálogos de archivo
-- `tauri-plugin-dialog` con feature `xdg-portal` para diálogos de mensaje
-- `webkit2gtk` (Linux) para habilitar corrección ortográfica
+- `rfd` v0.16 con features `xdg-portal` + `wayland` + `tokio` — diálogos de archivo
+- `tauri-plugin-dialog` con feature `xdg-portal` — diálogos de mensaje nativos (updater, errores)
+- `webkit2gtk` (Linux) — corrección ortográfica + devtools en producción
+- `mime_guess` — detección de MIME type para archivos arrastrados desde el SO
+- `wl-clipboard` (`wl-paste`) / `xclip` — lectura de imágenes del portapapeles del sistema (dependencias `.deb`)
 
 ## Release
 
