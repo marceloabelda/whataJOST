@@ -6,7 +6,7 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 use serde::Serialize;
 
 #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
-use webkit2gtk::{WebContextExt, WebViewExt};
+use webkit2gtk::{SettingsExt, WebContextExt, WebViewExt};
 
 use tauri::{
     image::Image,
@@ -712,7 +712,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     "#)
     .build()?;
 
-    // Enable spellcheck on linux webviews
+    // Enable spellcheck and devtools on linux webviews
     #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
     {
         let _ = window.with_webview(|w| {
@@ -720,6 +720,9 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             if let Some(context) = webview.context() {
                 context.set_spell_checking_enabled(true);
                 context.set_spell_checking_languages(&["es_ES", "en_US"]);
+            }
+            if let Some(settings) = webview.settings() {
+                settings.set_enable_developer_extras(true);
             }
         });
     }
