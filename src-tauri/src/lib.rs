@@ -312,10 +312,21 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     .focused(false)
     .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
     .on_navigation(move |url| {
-        // Allow blob: and data: URLs (used for file downloads, media, PDFs, etc.)
         let scheme = url.scheme();
-        if scheme == "blob" || scheme == "data" || scheme == "about" {
+        if scheme == "data" || scheme == "about" {
             return true;
+        }
+        // Interceptar navegación a blob: — en lugar de navegar, disparar descarga via JS
+        if scheme == "blob" {
+            let url_str = url.as_str().to_string();
+            if let Some(win) = opener.get_webview_window("whatsapp-web") {
+                let safe = url_str.replace('\\', "\\\\").replace('\'', "\\'");
+                let _ = win.eval(&format!(
+                    "try{{console.log('[whataJOST] blob nav interceptado');if(typeof window.__waDownloadBlob==='function'){{window.__waDownloadBlob('{}');}}}}catch(e){{console.error('[whataJOST] blob nav error:',e);}}",
+                    safe
+                ));
+            }
+            return false;
         }
         // Handle files dropped onto the WebView. WebKitGTK intercepts DnD at the
         // native level and tries to navigate to a file:// URL instead of firing DOM
@@ -362,10 +373,14 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     })
     .initialization_script(r#"
         (function() {
-            window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
-                level: 'info',
-                message: 'Script de inicialización cargado (whataJOST)'
-            });
+            const _ipcOk = !!window.__TAURI_INTERNALS__;
+            console.log('[whataJOST] init script cargado. IPC disponible:', _ipcOk);
+            if (_ipcOk) {
+                window.__TAURI_INTERNALS__.invoke('log_js', {
+                    level: 'info',
+                    message: 'Script de inicialización cargado (whataJOST)'
+                });
+            }
 
             const isWhatsApp = (url) =>
                 /whatsapp\.(com|net)|facebook\.com|fbcdn\.net/.test(new URL(url).hostname);
@@ -427,6 +442,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             };
 
             const downloadBlob = (url, fileName) => {
+                console.log('[whataJOST] downloadBlob iniciado:', fileName || '(sin nombre)', '| IPC:', !!window.__TAURI_INTERNALS__);
                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                     level: 'info',
                     message: 'downloadBlob iniciado: ' + (fileName || '(sin nombre)')
@@ -457,11 +473,15 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 })();
             };
 
+            // Exponer downloadBlob globalmente para que Rust pueda llamarla via eval
+            window.__waDownloadBlob = (url, fileName) => downloadBlob(url, fileName || 'archivo');
+
             // Catch programmatic anchor clicks (WhatsApp Web creates <a> elements and calls .click())
             const origAnchorClick = HTMLAnchorElement.prototype.click;
             HTMLAnchorElement.prototype.click = function() {
                 // Interceptar cualquier blob: URL (con o sin atributo download)
                 if (this.href && this.href.startsWith('blob:')) {
+                    console.log('[whataJOST] prototype.click blob interceptado:', this.download || '(sin attr)');
                     window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                         level: 'info',
                         message: 'Descarga interceptada (prototype.click): ' + (this.download || '(sin attr)')
@@ -481,6 +501,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                             if (node.href.startsWith('blob:')) {
                                 e.preventDefault();
                                 e.stopImmediatePropagation();
+                                console.log('[whataJOST] click event blob interceptado:', node.download || '(sin attr)');
                                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                                     level: 'info',
                                     message: 'Descarga interceptada (click event): ' + (node.download || '(sin attr)')
