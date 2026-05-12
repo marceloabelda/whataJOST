@@ -25,7 +25,7 @@ tauri-plugin-dialog = { version = "2", default-features = false, features = ["xd
 tauri-plugin-autostart = "2"
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
-rfd = { version = "0.16", default-features = false, features = ["xdg-portal", "wayland", "tokio"] }
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal", "wayland"] }
 mime_guess = "2"
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
