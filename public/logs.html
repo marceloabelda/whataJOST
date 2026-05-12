@@ -137,6 +137,10 @@
     }
 
     async function refreshLogs() {
+      if (!window.__TAURI_INTERNALS__) {
+        logList.innerHTML = '<div class="empty-state" style="color:#f15c5c">IPC no disponible (sin capability)</div>';
+        return;
+      }
       try {
         const logs = await window.__TAURI_INTERNALS__.invoke('get_logs');
         if (!logs.length) {
@@ -158,7 +162,7 @@
           logList.scrollTop = logList.scrollHeight;
         }
       } catch(e) {
-        console.warn('[whataJOST] log refresh failed:', e);
+        logList.innerHTML = '<div class="empty-state" style="color:#f15c5c">Error IPC: ' + escapeHtml(String(e)) + '</div>';
       }
     }
 

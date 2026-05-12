@@ -506,10 +506,48 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                     return;
                 }
 
+                // Si WebKit ya expone la imagen en clipboardData.items, usarla directo
+                const clipItems = e.clipboardData ? Array.from(e.clipboardData.items || []) : [];
+                const imageItem = clipItems.find(function(it) { return it.type && it.type.startsWith('image/'); });
+                if (imageItem) {
+                    e.preventDefault();
+                    e.stopImmediatePropagation();
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                        level: 'info',
+                        message: 'Imagen en clipboardData.items (' + imageItem.type + '), procesando directo'
+                    });
+                    var imgFile = imageItem.getAsFile();
+                    if (imgFile) {
+                        var imgDt = new DataTransfer();
+                        imgDt.items.add(imgFile);
+                        var imgPasteEvent;
+                        try {
+                            imgPasteEvent = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: imgDt });
+                        } catch(_) {
+                            imgPasteEvent = new Event('paste', { bubbles: true, cancelable: true });
+                            Object.defineProperty(imgPasteEvent, 'clipboardData', { get: function() { return imgDt; }, configurable: true });
+                        }
+                        (document.activeElement || document.body).dispatchEvent(imgPasteEvent);
+                    }
+                    return;
+                }
+
                 const clipTypes = e.clipboardData ? Array.from(e.clipboardData.types || []) : [];
+
+                // Si el portapapeles tiene texto, dejar pasar a WhatsApp (no es imagen)
+                if (clipTypes.some(function(t) { return t === 'text/plain' || t === 'text/html' || t === 'text/rtf'; })) {
+                    return;
+                }
+
+                // Sin texto, sin archivos, sin imagen directa → posible imagen del sistema.
+                // IMPORTANTE: detener el evento AHORA (sincrónico) para que WhatsApp no
+                // procese el paste vacío mientras esperamos la respuesta IPC (async).
+                e.preventDefault();
+                e.stopImmediatePropagation();
+
                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                     level: 'info',
-                    message: 'Evento paste interceptado. Tipos en portapapeles: ' + (clipTypes.join(', ') || '(vacío)')
+                    message: 'Paste interceptado (sin texto). Tipos: ' + (clipTypes.join(', ') || '(vacío)') + '. Consultando portapapeles...'
                 });
 
                 // Obtener imagen del portapapeles via IPC
@@ -534,9 +572,6 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                     });
                     return;
                 }
-
-                e.preventDefault();
-                e.stopPropagation();
 
                 // Convertir base64 a File
                 const b64 = clipImage.data;
@@ -1159,7 +1194,9 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
                     log_message(&app, LogLevel::Error, &msg);
                     msg
                 })?;
-            Ok(fallback.to_string_lossy().to_string())
+            let path_str = fallback.to_string_lossy().to_string();
+            log_message(&app, LogLevel::Info, format!("Archivo guardado en fallback (sin diálogo): {}", path_str));
+            Ok(path_str)
         }
     }
 }
