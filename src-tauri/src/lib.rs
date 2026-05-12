@@ -362,6 +362,11 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     })
     .initialization_script(r#"
         (function() {
+            window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                level: 'info',
+                message: 'Script de inicialización cargado (whataJOST)'
+            });
+
             const isWhatsApp = (url) =>
                 /whatsapp\.(com|net)|facebook\.com|fbcdn\.net/.test(new URL(url).hostname);
 
@@ -370,7 +375,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                     if (url.startsWith('blob:')) {
                         window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                             level: 'info',
-                            message: 'window.open con blob URL interceptado, descargando'
+                            message: 'window.open(blob:) interceptado, descargando'
                         });
                         downloadBlob(url, 'archivo');
                         return null;
@@ -401,11 +406,19 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
 
             // Helper: convert blob to base64 and invoke save_file
             const saveBlob = async (blob, fileName) => {
+                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                    level: 'info',
+                    message: 'saveBlob: leyendo blob (' + blob.size + ' bytes) para ' + fileName
+                });
                 const base64 = await new Promise((resolve, reject) => {
                     const reader = new FileReader();
                     reader.onload = () => resolve(reader.result.split(',')[1]);
                     reader.onerror = reject;
                     reader.readAsDataURL(blob);
+                });
+                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                    level: 'info',
+                    message: 'saveBlob: invocando save_file para ' + fileName
                 });
                 await window.__TAURI_INTERNALS__.invoke('save_file', {
                     data: base64,
@@ -414,20 +427,32 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             };
 
             const downloadBlob = (url, fileName) => {
+                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                    level: 'info',
+                    message: 'downloadBlob iniciado: ' + (fileName || '(sin nombre)')
+                });
                 (async () => {
                     try {
                         let blob = blobStore.get(url);
                         if (!blob) {
+                            window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                                level: 'info',
+                                message: 'Blob no en caché, haciendo fetch de URL'
+                            });
                             const response = await fetch(url);
-                            if (!response.ok) throw new Error('fetch failed');
+                            if (!response.ok) throw new Error('fetch failed: ' + response.status);
                             blob = await response.blob();
                         }
                         await saveBlob(blob, fileName);
                     } catch(e) {
-                        window.__TAURI_INTERNALS__.invoke('log_js', {
-                            level: 'error',
-                            message: 'Error al descargar archivo ' + fileName + ': ' + (e.message || e)
-                        });
+                        try {
+                            window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                                level: 'error',
+                                message: 'Error al descargar archivo ' + fileName + ': ' + (e.message || e)
+                            });
+                        } catch (_) {
+                            console.error('[whataJOST] Error al descargar (IPC no disponible):', e);
+                        }
                     }
                 })();
             };
@@ -435,7 +460,12 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             // Catch programmatic anchor clicks (WhatsApp Web creates <a> elements and calls .click())
             const origAnchorClick = HTMLAnchorElement.prototype.click;
             HTMLAnchorElement.prototype.click = function() {
-                if (this.hasAttribute('download') && this.href && this.href.startsWith('blob:')) {
+                // Interceptar cualquier blob: URL (con o sin atributo download)
+                if (this.href && this.href.startsWith('blob:')) {
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                        level: 'info',
+                        message: 'Descarga interceptada (prototype.click): ' + (this.download || '(sin attr)')
+                    });
                     downloadBlob(this.href, this.download || 'archivo');
                     return;
                 }
@@ -447,9 +477,14 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 for (const node of e.composedPath()) {
                     if (node.tagName === 'A' && node.href) {
                         try {
-                            if (node.hasAttribute('download') && node.href.startsWith('blob:')) {
+                            // Interceptar cualquier blob: URL (con o sin atributo download)
+                            if (node.href.startsWith('blob:')) {
                                 e.preventDefault();
                                 e.stopImmediatePropagation();
+                                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                                    level: 'info',
+                                    message: 'Descarga interceptada (click event): ' + (node.download || '(sin attr)')
+                                });
                                 downloadBlob(node.href, node.download || 'archivo');
                                 break;
                             }
