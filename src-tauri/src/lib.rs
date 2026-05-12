@@ -435,8 +435,8 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             // Catch programmatic anchor clicks (WhatsApp Web creates <a> elements and calls .click())
             const origAnchorClick = HTMLAnchorElement.prototype.click;
             HTMLAnchorElement.prototype.click = function() {
-                if (this.download && this.href && this.href.startsWith('blob:')) {
-                    downloadBlob(this.href, this.download);
+                if (this.hasAttribute('download') && this.href && this.href.startsWith('blob:')) {
+                    downloadBlob(this.href, this.download || 'archivo');
                     return;
                 }
                 return origAnchorClick.call(this);
@@ -447,10 +447,10 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 for (const node of e.composedPath()) {
                     if (node.tagName === 'A' && node.href) {
                         try {
-                            if (node.download && node.href.startsWith('blob:')) {
+                            if (node.hasAttribute('download') && node.href.startsWith('blob:')) {
                                 e.preventDefault();
                                 e.stopImmediatePropagation();
-                                downloadBlob(node.href, node.download);
+                                downloadBlob(node.href, node.download || 'archivo');
                                 break;
                             }
                             if (!isWhatsApp(node.href)) {
@@ -458,7 +458,12 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                                 e.stopImmediatePropagation();
                                 window.location.href = node.href;
                             }
-                        } catch(_) {}
+                        } catch(e) {
+                            window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                                level: 'error',
+                                message: 'Error en click handler: ' + (e.message || e)
+                            });
+                        }
                         break;
                     }
                 }
