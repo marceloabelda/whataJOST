@@ -120,7 +120,18 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 
 ---
 
-- **Links externos (lib.rs:429, 537):** `window.open` override + `document.addEventListener('click', capture)` redirigen URLs no-WhatsApp a `window.location.href` → `on_navigation` las abre con `opener.open_url()` del sistema.
+- **Links externos (lib.rs:429, 537):** `window.open` override + `document.addEventListener('click', capture)` redirigen URLs no-WhatsApp a `window.location.href` → `on_navigation` las abre con `opener.open_url()` del plugin opener. Si `open_url()` falla, se lanza `xdg-open <url>` directamente como fallback (lib.rs:~372). Ambos intentos quedan en los logs.
+
+- **Deep links `whatsapp://` (funciona ✓):**
+  El sistema operativo puede abrir WhataJOST cuando el usuario hace clic en un link `whatsapp://send?phone=...` en el browser o en otra app.
+
+  **Registro del protocolo:** `public/whatajost-url-handler.desktop` declara `MimeType=x-scheme-handler/whatsapp;` con `NoDisplay=true` (no aparece en lanzadores). El deb/rpm lo instala en `/usr/share/applications/` vía `bundle.linux.deb.files` en `tauri.conf.json`. El post-install corre `update-desktop-database` que lo activa como handler del sistema.
+
+  **`handle_deep_link(app, url)` (Rust):** Convierte `whatsapp://path?query` → `https://web.whatsapp.com/path?query` (strip de `whatsapp://`, prepend de la base). Llama `show_window`, luego lanza un thread que espera 800 ms y evalúa `window.location.href = "<url>"` en la ventana `whatsapp-web`. El delay es necesario: si la app estaba cerrada, la ventana necesita tiempo para cargar `web.whatsapp.com` antes de poder navegar.
+
+  **Dos rutas de entrada:**
+  1. **App ya corriendo** — `tauri_plugin_single_instance` callback: el nuevo proceso le pasa `args` al proceso ya en marcha; si hay una URL `whatsapp://` en los args, se llama `handle_deep_link`.
+  2. **Primera apertura** — `setup()`: lee `std::env::args()`, si encuentra `whatsapp://` lanza un thread que espera 5 s (para que la app cargue completamente) y llama `handle_deep_link`.
 - **Menú contextual (lib.rs:584):** Handlers capture-phase en `contextmenu`/`mousedown`/`mouseup` bloquean los listeners de WhatsApp en campos editables (`isContentEditable`, `INPUT`, `TEXTAREA`) → aparece el menú nativo de WebKitGTK con corrección ortográfica.
 - **Badge no leídos (lib.rs:812):** `MutationObserver` en `<title>` + `setInterval` cada 2,5 s. Parsea `(N) WhatsApp` del título y llama `update_unread_count` IPC.
 - **Notificaciones (lib.rs:791):** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente.
