@@ -51,11 +51,20 @@ La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script inyect
   1. Decodifica base64.
   2. Abre `rfd::FileDialog::new().set_file_name(name).save_file()`.
   3. Si el diálogo no aparece (sin xdg-portal activo) o el usuario cancela: guarda en `~/Downloads/WhataJOST/<fileName>` como fallback.
-- **Paste de imágenes** (lógica sincrónica antes de cualquier `await`):
-  1. Si `clipboardData.files.length > 0` → deja pasar a WhatsApp (archivos del SO)
-  2. Si `clipboardData.items` tiene un item `image/*` → para el evento y lo procesa directo (WebKit lo expone nativamente)
-  3. Si `clipboardData.types` contiene `text/plain` o `text/rtf` → deja pasar a WhatsApp (texto real). **No** se considera `text/html` como señal de texto: Firefox/Chrome al copiar una imagen ponen `text/html` con un `<img>` de fallback + `image/png` en el clipboard del sistema, pero WebKit2GTK no expone el `image/png` externo en `clipboardData.items`. Si se dejara pasar el paste, WhatsApp recibe el HTML pero no la imagen → nada funciona.
-  4. Sin texto plano, sin archivos, sin imagen en items → para el evento con `stopImmediatePropagation()` *antes* del `await`, luego invoca `read_clipboard_image` (IPC → `wl-paste` / `xclip`, que sí lee el `image/png` del sistema) y despacha un `ClipboardEvent` sintético con el archivo resultado
+- **Paste de imágenes** — handler capture-phase en `document` (lib.rs:560), flujo completo:
+
+  **Cuatro ramas en orden:**
+
+  1. **`clipboardData.files.length > 0`** → el paste ya trae archivos (e.g., arrastrado desde el SO o paste sintético que generamos nosotros mismos); dejar pasar a WhatsApp sin tocar nada.
+
+  2. **`clipboardData.items` tiene un item `image/*`** → WebKit2GTK expone la imagen directamente (ocurre cuando la imagen fue copiada dentro del mismo WebView). Se llama `imageItem.getAsFile()`, se agrega el `File` a un `DataTransfer` nuevo y se despacha un `ClipboardEvent` sintético con `clipboardData: dt` al elemento activo. Ese evento sintético vuelve a pasar por este handler, pero cae en la rama 1 (`files.length > 0`) y llega a WhatsApp.
+
+  3. **`clipboardData.types` tiene `text/plain` o `text/rtf`** → es texto real, dejar pasar a WhatsApp. **No** se incluye `text/html` en esta condición: Firefox/Chrome al copiar una imagen agregan un `<img>` en `text/html` como fallback + `image/png` en el clipboard del sistema, pero WebKit2GTK no expone el `image/png` externo en `clipboardData.items`. Si se pasara a WhatsApp, éste recibiría el HTML pero no la imagen → nada útil.
+
+  4. **Sin texto plano / sin archivos / sin imagen en items** (incluye `text/html` solo, clipboard vacío, imagen de app externa): el evento se para con `stopImmediatePropagation()` + `preventDefault()` **sincrónicamente** (antes de cualquier `await`; si se esperara, WhatsApp procesaría el paste vacío mientras llega la respuesta IPC). Luego:
+     - Invoca `read_clipboard_image` (IPC → `wl-paste --type image/png|jpeg|bmp|webp` o `xclip`, detectando la herramienta con `OnceLock`).
+     - Si devuelve `null` → log de warning, no se pega nada.
+     - Si devuelve `{data: base64, mime_type}` → decodifica el base64 a `Uint8Array`, crea un `Blob` y un `File('clipboard.ext')`, agrega a `DataTransfer` y despacha `ClipboardEvent` sintético al elemento activo → cae en rama 1 → WhatsApp lo recibe como imagen.
 - **Drag & drop**: intercepta `dragover`/`drop` y despacha paste sintético; `on_navigation` lee archivos `file://` arrastrados desde el SO y los inyecta vía `window.__tauriInjectDrop`
 - **Links externos**: intercepta `window.open` y clicks en `<a>` no-WhatsApp para abrir en el browser del SO
 - **Menú contextual**: permite el menú nativo de WebKitGTK en campos editables (corrección ortográfica) bloqueando los listeners de WhatsApp en capture phase
