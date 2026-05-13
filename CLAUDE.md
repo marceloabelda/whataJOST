@@ -65,10 +65,22 @@ La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script inyect
      - Invoca `read_clipboard_image` (IPC → `wl-paste --type image/png|jpeg|bmp|webp` o `xclip`, detectando la herramienta con `OnceLock`).
      - Si devuelve `null` → log de warning, no se pega nada.
      - Si devuelve `{data: base64, mime_type}` → decodifica el base64 a `Uint8Array`, crea un `Blob` y un `File('clipboard.ext')`, agrega a `DataTransfer` y despacha `ClipboardEvent` sintético al elemento activo → cae en rama 1 → WhatsApp lo recibe como imagen.
-- **Drag & drop** — tres capas de intercepción:
-  1. **DOM `drop`** (capture phase, lib.rs:~678): si `e.dataTransfer.files.length > 0` (WebKit expone los archivos), crea `DataTransfer` y despacha paste sintético. Si `files` está vacío (caso habitual en Linux/WebKit2GTK), lee `text/uri-list`: para `file://` URIs invoca `read_file_for_drop` vía IPC; para `https://` URIs hace `fetch`. Construye el `DataTransfer` con los blobs resultantes y despacha el paste.
-  2. **Tauri `DragDropEvent`** (`on_webview_event`, lib.rs:~870): intercepta drops nativos que Tauri captura antes del WebView. Lee los archivos con MIME type via `mime_guess` y despacha via `eval()`.
-  3. **`on_navigation` file://** (lib.rs:334): en WebKit antiguo/X11 el drop provoca una navegación `file://`; Rust la cancela, lee el archivo con `mime_guess` y llama `window.__tauriInjectDrop(name, b64, mime)` que despacha paste sintético.
+- **Drag & drop** — cuatro capas de intercepción (en orden de prioridad real):
+
+  **Por qué se necesitan múltiples capas:**
+  En Linux/Wayland, WebKit2GTK consume los eventos DnD internamente antes de que lleguen al DOM o al sistema de eventos de Tauri. El drop no dispara `dataTransfer.files`, ni `text/uri-list` en el DOM, ni `DragDropEvent` de Tauri. La única intercepción confiable es a nivel de la señal GTK.
+
+  1. **GTK `drag-data-received`** (Rust, `create_whatsapp_window`, lib.rs:~885) — **capa primaria, la única que funciona en Wayland/Nautilus**. Usando `window.with_webview`, se conecta directamente a la señal GTK del widget WebView con `widget.connect_drag_data_received(...)`. Extrae los URIs del `gtk::SelectionData`, decodifica los `file://` paths (percent-decoding UTF-8), lee cada archivo con `std::fs::read`, detecta MIME con `mime_guess`, codifica en base64 y llama `window.__tauriInjectDrop(name, b64, mime)` vía `win.eval()` desde un thread separado para no bloquear el loop GTK.
+
+  2. **DOM `drop`** (capture phase, lib.rs:~730): si `e.dataTransfer.files.length > 0` (WebKit expone los archivos), crea `DataTransfer` y despacha paste sintético. Si `files` está vacío, lee `text/uri-list`: para `file://` URIs invoca `read_file_for_drop` vía IPC; para `https://` URIs hace `fetch`. Fallback para X11 o WebKit que sí exponga el drop al DOM.
+
+  3. **Tauri `DragDropEvent`** (`on_webview_event`, lib.rs:~950): intercepta drops que Tauri captura antes del WebView. Lee los archivos con MIME type via `mime_guess` y llama `window.dispatchPasteWithFiles(dt)` via `eval()`. Fallback para plataformas donde Tauri recibe el evento antes que GTK.
+
+  4. **`on_navigation` file://** (lib.rs:~341): si WebKit intenta navegar a una URL `file://` (caso raro en X11 antiguo), Rust cancela la navegación, lee el archivo y llama `window.__tauriInjectDrop`. Registra en logs con prefijo `on_navigation file:// (fallback):` para distinguirlo del camino GTK.
+
+  **`window.__tauriInjectDrop(fileName, base64Data, mimeType)`**: función global (lib.rs:~856 en el init script) que convierte base64 → `Blob` → `File`, agrega a `DataTransfer` y llama `dispatchPasteWithFiles(dt)`.
+
+  **`window.dispatchPasteWithFiles(dt)`**: despacha un `ClipboardEvent('paste')` sintético al último elemento editable enfocado (`window.__waLastFocusedEditable`), que WhatsApp Web acepta como una imagen/archivo real.
 - **Links externos**: intercepta `window.open` y clicks en `<a>` no-WhatsApp para abrir en el browser del SO
 - **Menú contextual**: permite el menú nativo de WebKitGTK en campos editables (corrección ortográfica) bloqueando los listeners de WhatsApp en capture phase
 - **Badge no leídos**: observa `document.title` con `MutationObserver` + polling y llama `update_unread_count`
@@ -111,9 +123,10 @@ La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la 
 
 ## Key dependencies
 
-- `rfd` v0.16 con features `xdg-portal` + `wayland` + `tokio` — diálogos de archivo
+- `rfd` v0.17 con features `xdg-portal` + `wayland` — diálogos de archivo nativos
 - `tauri-plugin-dialog` con feature `xdg-portal` — diálogos de mensaje nativos (updater, errores)
-- `webkit2gtk` (Linux) — corrección ortográfica + devtools en producción
+- `webkit2gtk` v2 (Linux) — corrección ortográfica + devtools en producción
+- `glib` v0.18 + `gtk` v0.18 (Linux) — señales GTK para interceptar drag & drop a nivel nativo (ya eran transitivas vía webkit2gtk; se agregan como deps directas para usar `WidgetExt::connect_drag_data_received`)
 - `mime_guess` — detección de MIME type para archivos arrastrados desde el SO
 - `wl-clipboard` (`wl-paste`) / `xclip` — lectura de imágenes del portapapeles del sistema (dependencias `.deb`)
 
