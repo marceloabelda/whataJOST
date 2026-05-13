@@ -72,6 +72,27 @@ fn log_message(app: &AppHandle, level: LogLevel, message: impl Into<String>) {
     });
 }
 
+fn handle_deep_link(app: &AppHandle, url: &str) {
+    // whatsapp://send?phone=5491112345678 → https://web.whatsapp.com/send?phone=5491112345678
+    let web_url = format!(
+        "https://web.whatsapp.com/{}",
+        url.trim_start_matches("whatsapp://")
+    );
+    log_message(app, LogLevel::Info, format!("Deep link: {} → {}", url, web_url));
+    show_window(app);
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(800));
+        if let Some(win) = app2.get_webview_window("whatsapp-web") {
+            let js = format!(
+                "window.location.href = {};",
+                serde_json::to_string(&web_url).unwrap()
+            );
+            let _ = win.eval(&js);
+        }
+    });
+}
+
 fn show_window(app: &AppHandle) {
     if let Some(window) = app.get_webview_window("whatsapp-web") {
         let _ = window.unminimize();
@@ -1556,8 +1577,11 @@ pub fn run() {
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
             None::<Vec<&str>>,
         ))
-        .plugin(tauri_plugin_single_instance::init(|app, _args, _cwd| {
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             show_window(app);
+            if let Some(url) = args.iter().find(|a| a.starts_with("whatsapp://")) {
+                handle_deep_link(app, url);
+            }
         }))
         .invoke_handler(tauri::generate_handler![
             show_notification,
@@ -1579,6 +1603,19 @@ pub fn run() {
             log_message(app.handle(), LogLevel::Info, "WhataJOST iniciado");
 
             create_whatsapp_window(app.handle())?;
+
+            // Manejar deep link si la app fue lanzada con una URL whatsapp://
+            let launch_url = std::env::args()
+                .skip(1)
+                .find(|a| a.starts_with("whatsapp://"));
+            if let Some(url) = launch_url {
+                let handle = app.handle().clone();
+                std::thread::spawn(move || {
+                    // Esperar a que WhatsApp Web cargue antes de navegar
+                    std::thread::sleep(Duration::from_secs(5));
+                    handle_deep_link(&handle, &url);
+                });
+            }
 
             let autostart_enabled = app
                 .autolaunch()

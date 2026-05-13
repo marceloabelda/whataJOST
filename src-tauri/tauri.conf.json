@@ -35,10 +35,16 @@
     "createUpdaterArtifacts": true,
     "linux": {
       "deb": {
-        "depends": ["xclip", "wl-clipboard", "fonts-noto-color-emoji"]
+        "depends": ["xclip", "wl-clipboard", "fonts-noto-color-emoji"],
+        "files": {
+          "/usr/share/applications/whatajost-url-handler.desktop": "../public/whatajost-url-handler.desktop"
+        }
       },
       "rpm": {
-        "depends": ["xclip", "wl-clipboard", "google-noto-color-emoji-fonts"]
+        "depends": ["xclip", "wl-clipboard", "google-noto-color-emoji-fonts"],
+        "files": {
+          "/usr/share/applications/whatajost-url-handler.desktop": "../public/whatajost-url-handler.desktop"
+        }
       }
     }
   },

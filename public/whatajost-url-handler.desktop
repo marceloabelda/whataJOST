@@ -1,0 +1,7 @@
+[Desktop Entry]
+Type=Application
+Name=WhataJOST URL Handler
+Exec=whatajost %u
+MimeType=x-scheme-handler/whatsapp;
+NoDisplay=true
+StartupNotify=false
