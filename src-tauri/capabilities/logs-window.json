@@ -4,6 +4,7 @@
   "description": "Allow the logs viewer window to invoke log commands",
   "windows": ["logs"],
   "permissions": [
-    "core:default"
+    "core:default",
+    "allow-whatsapp-ipc"
   ]
 }

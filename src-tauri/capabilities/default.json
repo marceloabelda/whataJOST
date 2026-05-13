@@ -8,6 +8,7 @@
     "opener:default",
     "updater:default",
     "dialog:default",
-    "autostart:default"
+    "autostart:default",
+    "allow-whatsapp-ipc"
   ]
 }

@@ -1,0 +1,19 @@
+[default]
+description = "Permisos por defecto para comandos de la app principal (ventana local)"
+permissions = ["allow-whatsapp-ipc"]
+
+[[permission]]
+identifier = "allow-whatsapp-ipc"
+description = "Permite todos los comandos IPC usados desde la ventana de WhatsApp Web"
+commands.allow = [
+  "save_file",
+  "read_clipboard_image",
+  "update_unread_count",
+  "show_notification",
+  "close_notification",
+  "open_whatsapp",
+  "log_js",
+  "get_logs",
+  "clear_logs",
+  "open_logs",
+]
