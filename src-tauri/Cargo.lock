@@ -3169,6 +3169,9 @@ dependencies = [
  "ashpd",
  "block2",
  "dispatch2",
+ "glib-sys",
+ "gobject-sys",
+ "gtk-sys",
  "js-sys",
  "log",
  "objc2",
@@ -5219,7 +5222,7 @@ checksum = "a28ac98ddc8b9274cb41bb4d9d4d5c425b6020c50c46f25559911905610b4a88"
 
 [[package]]
 name = "whatajost"
-version = "1.1.52"
+version = "1.1.53"
 dependencies = [
  "base64 0.22.1",
  "glib",
