@@ -1,11 +1,11 @@
 {
-  "version": "v1.1.52",
-  "notes": "Release v1.1.52",
-  "pub_date": "2026-05-13T21:02:59Z",
+  "version": "v1.1.53",
+  "notes": "Release v1.1.53",
+  "pub_date": "2026-05-13T21:21:04Z",
   "platforms": {
     "linux-x86_64": {
-      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUM0gwYnFncFp5cC9mTGpDM2dOVmZISkpyL2JZZ2NLOHNlK0NpMHIzMEJVRmpJSmpZUDFlOUd6Q2hiWVRtVEcxYVpHUlJSODNOcXlFV29oa3ZVdDR1TTNVYWNoc0V3OHdRPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc4NzA2MTc2CWZpbGU6d2hhdGFKT1NUXzEuMS41Ml9hbWQ2NC5kZWIKVTl1MGtINVEwMmRpYlI2Vis1cjdEVE4vMmdSb3lON29SQVVHdXZHdXpFZ21TQi83Yjh6ZVRnVmZCdG1tR2J4aEp5bHoycEFSbHFqMURNRU1tMngvQlE9PQo=",
-      "url": "https://github.com/marceloabelda/whataJOST/releases/download/v1.1.52/whataJOST_1.1.52_amd64.deb"
+      "signature": "dW50cnVzdGVkIGNvbW1lbnQ6IHNpZ25hdHVyZSBmcm9tIHRhdXJpIHNlY3JldCBrZXkKUlVUM0gwYnFncFp5cDJsai95bUFkMnJJeUFBRHVZcSt1OVpxa2ljL0hidVdXQmo1YjBrV3F3dE1kcUpKVlJ6QW5iUkdBcmpTYTdJa0gxZEl5R1YrWkdXZkh3WklsbTN1SmdnPQp0cnVzdGVkIGNvbW1lbnQ6IHRpbWVzdGFtcDoxNzc4NzA3MjYwCWZpbGU6d2hhdGFKT1NUXzEuMS41M19hbWQ2NC5kZWIKZlM3M0VVZ3psQUhjc1NkdWdZdVFpTkZHMnU5Q0Z5N3hKSFhTeXJKUHEzakZMeHFHMVM0dktvNHBiSFI4TGYrTXcxY2JnSTUrZTM2T2U1aDJ3UHI4QXc9PQo=",
+      "url": "https://github.com/marceloabelda/whataJOST/releases/download/v1.1.53/whataJOST_1.1.53_amd64.deb"
     }
   }
 }
