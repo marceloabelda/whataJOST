@@ -23,7 +23,34 @@ Para cada tarea, seguí estos pasos en orden:
 
 La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script inyectado antes de que cargue la página. El script:
 
-- **Descargas**: sobreescribe `HTMLAnchorElement.prototype.click` y escucha clicks en `<a download blob:>` para invocar `save_file` vía IPC; rastrea blobs con `URL.createObjectURL`/`revokeObjectURL` (blobStore) para evitar race conditions tras `revokeObjectURL`
+- **Descargas** — flujo completo en tres capas:
+
+  **Cómo genera WhatsApp Web una descarga:**
+  1. Crea el contenido como `Blob` y obtiene una `blob:` URL con `URL.createObjectURL(blob)`.
+  2. Crea un `<a href="blob:..." download="nombre.ext">` y llama `.click()` programáticamente (o el usuario hace clic directo).
+
+  **Tres puntos de intercepción (en orden de prioridad):**
+
+  1. **`HTMLAnchorElement.prototype.click`** (lib.rs:481) — cacha `.click()` programáticos. Si `this.href` empieza con `blob:`, desvía a `downloadBlob(url, fileName)` y retorna sin propagar.
+  2. **`document.addEventListener('click', ..., true)`** (lib.rs:496) — capture phase, cacha clics del usuario sobre `<a href="blob:...">` ya en el DOM. Llama `preventDefault` + `stopImmediatePropagation` y desvía a `downloadBlob`.
+  3. **`on_navigation` (Rust, lib.rs:320)** — si el webview intenta navegar a una URL `blob:` (ninguno de los anteriores la capturó), Rust cancela la navegación y llama `window.__waDownloadBlob(url)` vía `win.eval(...)`.
+
+  Adicionalmente, **`window.open(blob:...)`** (lib.rs:390) también se intercepta y desvía a `downloadBlob` (algunos flujos de exportación de WhatsApp usan `window.open` en lugar de un `<a>`).
+
+  **`blobStore`** (lib.rs:409): sobrescribe `URL.createObjectURL` para guardar cada `blob:URL → Blob` en un `Map`. Sobrescribe `URL.revokeObjectURL` para eliminar la entrada recién 60 segundos después (no inmediatamente), evitando que `downloadBlob` falle si WhatsApp ya revocó la URL antes de que `FileReader` termine de leerla.
+
+  **`downloadBlob(url, fileName)`** (lib.rs:444):
+  1. Busca el blob en `blobStore`. Si no está (fue revocado hace >60 s o no pasó por el store), hace `fetch(url)`.
+  2. Llama `saveBlob(blob, fileName)`.
+
+  **`saveBlob(blob, fileName)`** (lib.rs:423):
+  1. Convierte el blob a base64 con `FileReader.readAsDataURL`.
+  2. Invoca IPC `save_file(data, fileName)` → Rust.
+
+  **`save_file` (Rust, lib.rs:1212)**:
+  1. Decodifica base64.
+  2. Abre `rfd::FileDialog::new().set_file_name(name).save_file()`.
+  3. Si el diálogo no aparece (sin xdg-portal activo) o el usuario cancela: guarda en `~/Downloads/WhataJOST/<fileName>` como fallback.
 - **Paste de imágenes** (lógica sincrónica antes de cualquier `await`):
   1. Si `clipboardData.files.length > 0` → deja pasar a WhatsApp (archivos del SO)
   2. Si `clipboardData.items` tiene un item `image/*` → para el evento y lo procesa directo (WebKit lo expone nativamente)
