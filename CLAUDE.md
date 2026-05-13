@@ -54,12 +54,14 @@ La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script inyect
 
 | Archivo | Ventana | Permisos |
 |---|---|---|
-| `default.json` | `main` (oculta, 1×1 px) | `core`, `opener`, `updater`, `dialog`, `autostart` |
-| `whatsapp-notification.json` | `whatsapp-web` (remota: `*.whatsapp.com`, `*.whatsapp.net`) | `core:default`, `clipboard-manager:allow-read-image` |
-| `logs-window.json` | `logs` | `core:default` |
-| `notification-window.json` | `notification` | `core:default` |
+| `default.json` | `main` (oculta, 1×1 px) | `core`, `opener`, `updater`, `dialog`, `autostart`, `allow-whatsapp-ipc` |
+| `whatsapp-notification.json` | `whatsapp-web` (remota: `*.whatsapp.com`, `*.whatsapp.net`) | `core:default`, `clipboard-manager:allow-read-image`, `allow-whatsapp-ipc` |
+| `logs-window.json` | `logs` | `core:default`, `allow-whatsapp-ipc` |
+| `notification-window.json` | `notification` | `core:default`, `allow-whatsapp-ipc` |
 
-La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la URL coincide con los patrones de `remote.urls`. Los comandos definidos en `invoke_handler!` no requieren permisos de plugin individuales.
+La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la URL coincide con los patrones de `remote.urls`.
+
+**Importante — ACL de Tauri 2.11.1+**: Desde Tauri 2.11.1, todos los comandos custom de la app (no solo plugins) requieren permiso ACL explícito cuando son invocados desde webviews remotos. El archivo `src-tauri/permissions/default.toml` define el permiso `allow-whatsapp-ipc` que lista los 10 comandos IPC de la app. Sin ese archivo (o sin incluir `allow-whatsapp-ipc` en el capability de la ventana remota), los comandos fallan silenciosamente — no aparece ningún error en la consola JS ni en los logs de Rust.
 
 ### Ventanas HTML (`public/`)
 
