@@ -595,21 +595,23 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
 
                 const clipTypes = e.clipboardData ? Array.from(e.clipboardData.types || []) : [];
 
-                // Si el portapapeles tiene texto, dejar pasar a WhatsApp (no es imagen)
-                if (clipTypes.some(function(t) { return t === 'text/plain' || t === 'text/html' || t === 'text/rtf'; })) {
+                // Solo text/plain o text/rtf indican un paste de texto real → dejar pasar a WhatsApp.
+                // text/html sin text/plain puede ser una imagen envuelta en HTML
+                // (ej: Firefox copia imagen → clipboard tiene image/png + text/html con <img>).
+                // WebKit2GTK no expone el image/png externo en clipboardData.items, pero wl-paste sí
+                // puede leerlo del clipboard del sistema → dejamos que caiga al path IPC.
+                if (clipTypes.some(function(t) { return t === 'text/plain' || t === 'text/rtf'; })) {
                     return;
                 }
-
-                // Sin texto, sin archivos, sin imagen directa → posible imagen del sistema.
-                // IMPORTANTE: detener el evento AHORA (sincrónico) para que WhatsApp no
-                // procese el paste vacío mientras esperamos la respuesta IPC (async).
-                e.preventDefault();
-                e.stopImmediatePropagation();
-
                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                     level: 'info',
-                    message: 'Paste interceptado (sin texto). Tipos: ' + (clipTypes.join(', ') || '(vacío)') + '. Consultando portapapeles...'
+                    message: 'Paste sin texto plano. Tipos: ' + (clipTypes.join(', ') || '(vacío)') + '. Intentando IPC...'
                 });
+
+                // IMPORTANTE: detener el evento AHORA (sincrónico) para que WhatsApp no
+                // procese el paste mientras esperamos la respuesta IPC (async).
+                e.preventDefault();
+                e.stopImmediatePropagation();
 
                 // Obtener imagen del portapapeles via IPC
                 let clipImage = null;

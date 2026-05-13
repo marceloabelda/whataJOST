@@ -54,8 +54,8 @@ La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script inyect
 - **Paste de imágenes** (lógica sincrónica antes de cualquier `await`):
   1. Si `clipboardData.files.length > 0` → deja pasar a WhatsApp (archivos del SO)
   2. Si `clipboardData.items` tiene un item `image/*` → para el evento y lo procesa directo (WebKit lo expone nativamente)
-  3. Si `clipboardData.types` contiene `text/plain` / `text/html` / `text/rtf` → deja pasar a WhatsApp (texto)
-  4. Sin texto/archivos/imagen visible → para el evento con `stopImmediatePropagation()` *antes* del `await`, luego invoca `read_clipboard_image` (IPC → `wl-paste` / `xclip`) y despacha un `ClipboardEvent` sintético con el archivo resultado
+  3. Si `clipboardData.types` contiene `text/plain` o `text/rtf` → deja pasar a WhatsApp (texto real). **No** se considera `text/html` como señal de texto: Firefox/Chrome al copiar una imagen ponen `text/html` con un `<img>` de fallback + `image/png` en el clipboard del sistema, pero WebKit2GTK no expone el `image/png` externo en `clipboardData.items`. Si se dejara pasar el paste, WhatsApp recibe el HTML pero no la imagen → nada funciona.
+  4. Sin texto plano, sin archivos, sin imagen en items → para el evento con `stopImmediatePropagation()` *antes* del `await`, luego invoca `read_clipboard_image` (IPC → `wl-paste` / `xclip`, que sí lee el `image/png` del sistema) y despacha un `ClipboardEvent` sintético con el archivo resultado
 - **Drag & drop**: intercepta `dragover`/`drop` y despacha paste sintético; `on_navigation` lee archivos `file://` arrastrados desde el SO y los inyecta vía `window.__tauriInjectDrop`
 - **Links externos**: intercepta `window.open` y clicks en `<a>` no-WhatsApp para abrir en el browser del SO
 - **Menú contextual**: permite el menú nativo de WebKitGTK en campos editables (corrección ortográfica) bloqueando los listeners de WhatsApp en capture phase
