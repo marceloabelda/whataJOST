@@ -377,7 +377,18 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         if is_whatsapp {
             true
         } else {
-            let _ = opener.opener().open_url(url.as_str(), None::<&str>);
+            let url_str = url.as_str().to_string();
+            log_message(&opener, LogLevel::Info, format!("Link externo: {}", url_str));
+            if let Err(e) = opener.opener().open_url(&url_str, None::<&str>) {
+                log_message(&opener, LogLevel::Warn, format!("opener.open_url falló ({}), usando xdg-open...", e));
+                #[cfg(target_os = "linux")]
+                let _ = std::process::Command::new("xdg-open")
+                    .arg(&url_str)
+                    .stdin(std::process::Stdio::null())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .spawn();
+            }
             false
         }
     })
@@ -436,7 +447,14 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                         downloadBlob(url, 'archivo');
                         return null;
                     }
-                    if (!isWhatsApp(url)) { window.location.href = url; return null; }
+                    if (!isWhatsApp(url)) {
+                        window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                            level: 'info',
+                            message: 'Link externo interceptado (window.open): ' + url
+                        });
+                        window.location.href = url;
+                        return null;
+                    }
                 } catch(e) {
                     window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                         level: 'error',
@@ -553,6 +571,10 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                             if (!isWhatsApp(node.href)) {
                                 e.preventDefault();
                                 e.stopImmediatePropagation();
+                                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                                    level: 'info',
+                                    message: 'Link externo interceptado (click): ' + node.href
+                                });
                                 window.location.href = node.href;
                             }
                         } catch(e) {
