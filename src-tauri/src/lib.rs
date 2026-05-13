@@ -392,6 +392,37 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             const isWhatsApp = (url) =>
                 /whatsapp\.(com|net)|facebook\.com|fbcdn\.net/.test(new URL(url).hostname);
 
+            // Rastrear el último elemento editable enfocado.
+            // Al hacer drag & drop, document.activeElement puede ser body si el foco
+            // se perdió durante el arrastre; con este rastreo podemos re-enfocar el
+            // input del chat antes de despachar el paste sintético.
+            document.addEventListener('focus', function(e) {
+                var el = e.target;
+                if (el && (el.isContentEditable || el.tagName === 'INPUT' || el.tagName === 'TEXTAREA')) {
+                    window.__waLastFocusedEditable = el;
+                }
+            }, true);
+
+            window.dispatchPasteWithFiles = function(dt) {
+                if (!dt.files.length) {
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', { level: 'warn', message: 'dispatchPasteWithFiles: DataTransfer vacío, no se despacha' });
+                    return;
+                }
+                var target = window.__waLastFocusedEditable || document.activeElement || document.body;
+                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                    level: 'info',
+                    message: 'dispatchPasteWithFiles: ' + dt.files.length + ' archivo(s), target=' + (target.tagName || 'desconocido') + ' editable=' + (target.isContentEditable || false)
+                });
+                if (target !== document.body && target.focus) try { target.focus(); } catch(_) {}
+                var pe;
+                try { pe = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }); }
+                catch(_) {
+                    pe = new Event('paste', { bubbles: true, cancelable: true });
+                    Object.defineProperty(pe, 'clipboardData', { get: function() { return dt; }, configurable: true });
+                }
+                target.dispatchEvent(pe);
+            };
+
             window.open = function(url) {
                 if (url) try {
                     if (url.startsWith('blob:')) {
@@ -688,24 +719,20 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 e.preventDefault();
                 e.stopPropagation();
 
-                if (!e.dataTransfer) return;
+                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                    level: 'info',
+                    message: 'DOM drop: files=' + (e.dataTransfer ? e.dataTransfer.files.length : 'N/A') +
+                             ' types=[' + Array.from(e.dataTransfer ? e.dataTransfer.types || [] : []).join(',') + ']' +
+                             ' uriList=' + (e.dataTransfer ? JSON.stringify(e.dataTransfer.getData('text/uri-list') || '') : 'N/A')
+                });
 
-                function dispatchFilePaste(dt) {
-                    if (!dt.files.length) return;
-                    let pe;
-                    try { pe = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }); }
-                    catch(_) {
-                        pe = new Event('paste', { bubbles: true, cancelable: true });
-                        Object.defineProperty(pe, 'clipboardData', { get: function() { return dt; }, configurable: true });
-                    }
-                    (document.activeElement || document.body).dispatchEvent(pe);
-                }
+                if (!e.dataTransfer) return;
 
                 // Path 1: WebKit expone los archivos directamente en dataTransfer.files
                 if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
                     const dt = new DataTransfer();
                     for (let i = 0; i < e.dataTransfer.files.length; i++) dt.items.add(e.dataTransfer.files[i]);
-                    dispatchFilePaste(dt);
+                    dispatchPasteWithFiles(dt);
                     return;
                 }
 
@@ -753,7 +780,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                             });
                         }
                     }
-                    dispatchFilePaste(dt);
+                    dispatchPasteWithFiles(dt);
                 })();
             }, true);
 
@@ -816,41 +843,22 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             // synthetic ClipboardEvents but ignores synthetic DragEvents (isTrusted check).
             window.__tauriInjectDrop = function(fileName, base64Data, mimeType) {
                 try {
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                        level: 'info',
+                        message: '__tauriInjectDrop: ' + fileName + ' (' + (mimeType || 'octet-stream') + ')'
+                    });
                     const binary = atob(base64Data);
                     const array = new Uint8Array(binary.length);
                     for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
                     const blob = new Blob([array], { type: mimeType || 'application/octet-stream' });
                     const file = new File([blob], fileName, { type: mimeType || 'application/octet-stream' });
-
                     const dt = new DataTransfer();
                     dt.items.add(file);
-
-                    // Dispatch as paste so WhatsApp Web processes the file.
-                    // The capture-phase paste listener above (line ~301) sees files
-                    // in clipboardData and returns early, letting WhatsApp handle it.
-                    let pasteEvent;
-                    try {
-                        pasteEvent = new ClipboardEvent('paste', {
-                            bubbles: true,
-                            cancelable: true,
-                            clipboardData: dt
-                        });
-                    } catch(_) {
-                        pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
-                        Object.defineProperty(pasteEvent, 'clipboardData', {
-                            get: function() { return dt; },
-                            configurable: true
-                        });
-                    }
-
-                    // Target the active element (chat input) so WhatsApp Web
-                    // processes the paste in the current conversation.
-                    const target = document.activeElement || document.body;
-                    target.dispatchEvent(pasteEvent);
+                    dispatchPasteWithFiles(dt);
                 } catch(e) {
-                    window.__TAURI_INTERNALS__.invoke('log_js', {
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                         level: 'error',
-                        message: 'Error al inyectar archivo arrastrado: ' + (e.message || e)
+                        message: '__tauriInjectDrop error: ' + (e.message || e)
                     });
                 }
             };
@@ -885,6 +893,9 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
     let w = window.clone();
     window.on_webview_event(move |event| {
         if let WebviewEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
+            log_message(&w.app_handle(), LogLevel::Info, format!(
+                "DragDrop Tauri event: {} path(s)", paths.len()
+            ));
             let mut files_json = String::from("[");
             for (i, path) in paths.iter().enumerate() {
                 if let Ok(data) = std::fs::read(path) {
@@ -913,7 +924,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             files_json.push(']');
 
             let _ = w.eval(&format!(
-                r#"(function(){{var files={};if(!files.length)return;var dt=new DataTransfer();for(var i=0;i<files.length;i++){{var f=files[i];var b=atob(f.data);var a=new Uint8Array(b.length);for(var j=0;j<b.length;j++)a[j]=b.charCodeAt(j);var blob=new Blob([a],{{type:f.mime||"application/octet-stream"}});var file=new File([blob],f.name,{{type:f.mime||"application/octet-stream"}});dt.items.add(file);}}var pe;try{{pe=new ClipboardEvent("paste",{{bubbles:true,cancelable:true,clipboardData:dt}});}}catch(_){{pe=new Event("paste",{{bubbles:true,cancelable:true}});Object.defineProperty(pe,"clipboardData",{{get:function(){{return dt;}},configurable:true}});}}(document.activeElement||document.body).dispatchEvent(pe);}})()"#,
+                r#"(function(){{var files={};if(!files.length)return;var dt=new DataTransfer();for(var i=0;i<files.length;i++){{var f=files[i];var b=atob(f.data);var a=new Uint8Array(b.length);for(var j=0;j<b.length;j++)a[j]=b.charCodeAt(j);var blob=new Blob([a],{{type:f.mime||"application/octet-stream"}});dt.items.add(new File([blob],f.name,{{type:f.mime||"application/octet-stream"}}));}}if(typeof window.dispatchPasteWithFiles==='function'){{window.dispatchPasteWithFiles(dt);}}else{{console.error('[whataJOST] dispatchPasteWithFiles no disponible');}}}})()"#,
                 files_json
             ));
         }
