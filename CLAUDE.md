@@ -132,9 +132,74 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
   **Dos rutas de entrada:**
   1. **App ya corriendo** — `tauri_plugin_single_instance` callback: el nuevo proceso le pasa `args` al proceso ya en marcha; si hay una URL `whatsapp://` en los args, se llama `handle_deep_link`.
   2. **Primera apertura** — `setup()`: lee `std::env::args()`, si encuentra `whatsapp://` lanza un thread que espera 5 s (para que la app cargue completamente) y llama `handle_deep_link`.
-- **Menú contextual (lib.rs:584):** Handlers capture-phase en `contextmenu`/`mousedown`/`mouseup` bloquean los listeners de WhatsApp en campos editables (`isContentEditable`, `INPUT`, `TEXTAREA`) → aparece el menú nativo de WebKitGTK con corrección ortográfica.
-- **Badge no leídos (lib.rs:812):** `MutationObserver` en `<title>` + `setInterval` cada 2,5 s. Parsea `(N) WhatsApp` del título y llama `update_unread_count` IPC.
-- **Notificaciones (lib.rs:791):** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente.
+- **Menú contextual (lib.rs:616):** Handlers capture-phase en `contextmenu`/`mousedown`/`mouseup` bloquean los listeners de WhatsApp en campos editables (`isContentEditable`, `INPUT`, `TEXTAREA`) → aparece el menú nativo de WebKitGTK con corrección ortográfica.
+- **Badge no leídos (lib.rs:856):** `MutationObserver` en `<title>` + `setInterval` cada 2,5 s. Parsea `(N) WhatsApp` del título y llama `update_unread_count` IPC.
+- **Notificaciones (lib.rs:834):** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente.
+- **User agent (lib.rs:341):** La ventana `whatsapp-web` usa un UA de Chrome/Linux para que WhatsApp Web no detecte un navegador desconocido y bloquee el acceso.
+
+---
+
+#### Comportamientos Rust
+
+**Cierre de ventana → hide (lib.rs:996):**
+`on_window_event` con `CloseRequested` llama `api.prevent_close()` + `window.hide()`. La ventana de WhatsApp nunca se destruye; solo se oculta. Esto es intencional: destruirla y recrearla es lento y pierde la sesión si el proceso WebKit muere.
+
+**`show_window` (lib.rs:96):** Llama `set_always_on_top(true)` → `show()` → `set_focus()` → `set_always_on_top(false)`. El truco `always_on_top` es necesario en algunos WMs (ej. i3, algunos GNOME) que ignoran `set_focus()` sin que la ventana sea temporalmente top-level.
+
+> **⚠ No tocar:** el orden `always_on_top(true)` → `show` → `focus` → `always_on_top(false)`. Quitar cualquier paso puede hacer que la ventana no aparezca al frente en ciertos escritorios.
+
+---
+
+#### Bandeja del sistema (tray)
+
+Ícono: `public/tray.png` (64×64), embebido en el binario con `include_bytes!` en tiempo de compilación.
+
+**Comportamiento del click:**
+- **Click izquierdo:** alterna show/hide de la ventana `whatsapp-web` (si estaba visible la oculta, si no la muestra). `show_menu_on_left_click(false)` — el menú solo aparece con click derecho.
+- **Click derecho:** muestra el menú contextual.
+
+**Menú del tray:**
+| Ítem | Tipo | Comportamiento |
+|---|---|---|
+| Abrir WhatsApp | MenuItem | `show_window` |
+| Iniciar con el sistema | CheckMenuItem | `tauri_plugin_autostart` enable/disable |
+| Notificaciones emergentes | CheckMenuItem | toggle `NotificationPopupState`, persiste en `config.json` |
+| Buscar actualización | MenuItem | `check_for_updates(app)` |
+| Ver logs | MenuItem | abre/enfoca ventana `logs` |
+| Salir | MenuItem | `app.exit(0)` |
+
+**Badge de no leídos (Rust, lib.rs:1226):**
+Cuando `update_unread_count` recibe `count > 0`, llama `generate_badged_icon`: copia el RGBA base del ícono, dibuja un círculo rojo (radio 14, centro 48,16) con `draw_filled_circle` (anti-aliasing manual via `blend_pixel`), superpone el número con `draw_count_text` usando `DIGIT_PATTERNS` (pixel art 5×7 a escala 2). Muestra `9+` para counts > 9. No usa librerías de imágenes — todo pixel art en RGBA puro.
+
+> **⚠ No tocar:** `TrayBadgeState.base_rgba` se captura una sola vez al inicio desde el PNG embebido; si se pierde, el badge no puede regenerarse. `FONT_SCALE = 2` calibra los dígitos para el ícono de 64×64.
+
+---
+
+#### Config persistente
+
+`config.json` en `app.path().app_config_dir()` (Linux: `~/.config/whatajost/config.json`). Solo almacena `{"notifications_enabled": bool}`. Se lee al inicio (`load_notification_enabled`) y se escribe en cada toggle del menú (`save_notification_enabled`). No hay migración de schema — si la clave falta, el default es `true`.
+
+---
+
+#### Auto-updater (funciona ✓)
+
+`check_for_updates_impl(app, silent)` — corre en background thread.
+- **Al inicio:** llamado con `silent=true` después de 5 s (para no interferir con la carga inicial de WhatsApp Web).
+- **Desde el menú:** llamado con `silent=false` (muestra diálogos de error si falla).
+
+Flujo:
+1. `tauri_plugin_updater` verifica `latest.json` en GitHub releases.
+2. Si hay update: diálogo `OkCancel` con la versión nueva.
+3. Descarga el paquete a un temp file (`.deb` en Linux, `.msi` en Windows).
+4. **Linux — 4 intentos de instalación en cascada:**
+   - `pkexec apt install --yes <file>` (Ubuntu moderno, maneja dependencias)
+   - `pkexec dpkg -i <file>` (fallback sin resolver deps)
+   - `zenity --password` + `sudo -S dpkg -i <file>` (fallback sin pkexec)
+   - `xdg-open <file>` (abre el instalador gráfico del sistema; muestra aviso al usuario para que complete manualmente)
+5. **Windows:** `msiexec /i <file> /quiet`
+6. Si la instalación exitosa: relanza el binario nuevo con `sh -c "sleep 2 && exec '<exe>'"` (el delay de 2 s permite que el proceso viejo libere el lock de `tauri_plugin_single_instance`) → `app.exit(0)`.
+
+> **⚠ No tocar:** el delay de 2 s antes de relanzar (sin él, el nuevo proceso ve el lock del viejo y no arranca). El orden de los 4 intentos Linux (el 4º abre un diálogo y retorna, no espera a que el usuario instale — si se invierte el orden, los intentos con pkexec no corren).
 
 ---
 
