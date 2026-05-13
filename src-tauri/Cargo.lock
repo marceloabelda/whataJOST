@@ -5222,6 +5222,8 @@ name = "whatajost"
 version = "1.1.50"
 dependencies = [
  "base64 0.22.1",
+ "glib",
+ "gtk",
  "mime_guess",
  "rfd 0.17.2",
  "serde",
