@@ -340,10 +340,13 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         // drop events. Read the file and inject it into the page ourselves.
         if scheme == "file" {
             let path = url.path();
+            // GTK drag-data-received handler is the primary path for file drops.
+            // This fires only if WebKit tries to navigate to file:// (rare fallback).
+            log_message(&opener, LogLevel::Info, format!("on_navigation file:// (fallback): {}", path));
             let data = match std::fs::read(path) {
                 Ok(d) => d,
                 Err(e) => {
-                    log_message(&opener, LogLevel::Error, format!("No se pudo leer el archivo arrastrado: {e}"));
+                    log_message(&opener, LogLevel::Error, format!("on_navigation file:// error leyendo: {e}"));
                     return false;
                 }
             };
@@ -881,6 +884,71 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         });
     }
 
+    // Intercept file drops at the GTK widget level. On Linux/Wayland, WebKit2GTK
+    // handles DnD internally before DOM events or Tauri's DragDropEvent can fire.
+    // Connecting to drag-data-received on the underlying GtkWidget bypasses WebKit's
+    // security sandbox and catches drops from Nautilus, browsers, and other apps.
+    #[cfg(target_os = "linux")]
+    {
+        let app_dnd = window.app_handle().clone();
+        let win_dnd = window.clone();
+        let _ = window.with_webview(move |w| {
+            use gtk::prelude::WidgetExt;
+
+            let widget = w.inner();
+            // Add text/uri-list as an accepted drop target (additive — does not
+            // replace WebKit's own drag destination registration).
+            widget.drag_dest_add_uri_targets();
+
+            let app_h = app_dnd;
+            let win_h = win_dnd;
+
+            widget.connect_drag_data_received(move |_widget, _ctx, _x, _y, sel: &gtk::SelectionData, _info, _time| {
+                let uris: Vec<glib::GString> = sel.uris();
+                if uris.is_empty() { return; }
+
+                let uri_strs: Vec<String> = uris.into_iter().map(|u| u.to_string()).collect();
+                log_message(&app_h, LogLevel::Info,
+                    format!("GTK drag-data-received: {} URI(s): {}", uri_strs.len(), uri_strs.join(", ")));
+
+                let app_h2 = app_h.clone();
+                let win_h2 = win_h.clone();
+
+                std::thread::spawn(move || {
+                    for uri in &uri_strs {
+                        if !uri.starts_with("file://") { continue; }
+                        let path = decode_file_uri(uri);
+                        match std::fs::read(&path) {
+                            Ok(data) => {
+                                let name = path.file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("archivo")
+                                    .to_string();
+                                let mime = mime_guess::from_path(&path)
+                                    .first_or_octet_stream()
+                                    .to_string();
+                                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+                                log_message(&app_h2, LogLevel::Info,
+                                    format!("GTK drop inyectado: '{}' ({})", name, mime));
+                                let js = format!(
+                                    "window.__tauriInjectDrop&&window.__tauriInjectDrop({},{},{})",
+                                    serde_json::to_string(&name).unwrap(),
+                                    serde_json::to_string(&b64).unwrap(),
+                                    serde_json::to_string(&mime).unwrap(),
+                                );
+                                let _ = win_h2.eval(&js);
+                            }
+                            Err(e) => {
+                                log_message(&app_h2, LogLevel::Error,
+                                    format!("GTK drop: error leyendo '{}': {}", path.display(), e));
+                            }
+                        }
+                    }
+                });
+            });
+        });
+    }
+
     let win_close = window.clone();
     window.on_window_event(move |event| {
         if let WindowEvent::CloseRequested { api, .. } = event {
@@ -951,6 +1019,28 @@ fn base64_encode_bytes(data: &[u8]) -> String {
 
 #[cfg(target_os = "linux")]
 static CLIPBOARD_TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
+
+#[cfg(target_os = "linux")]
+fn decode_file_uri(uri: &str) -> std::path::PathBuf {
+    let path = uri.strip_prefix("file://").unwrap_or(uri);
+    let bytes = path.as_bytes();
+    let mut decoded: Vec<u8> = Vec::with_capacity(bytes.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == b'%' && i + 2 < bytes.len() {
+            let hi = (bytes[i + 1] as char).to_digit(16);
+            let lo = (bytes[i + 2] as char).to_digit(16);
+            if let (Some(h), Some(l)) = (hi, lo) {
+                decoded.push((h * 16 + l) as u8);
+                i += 3;
+                continue;
+            }
+        }
+        decoded.push(bytes[i]);
+        i += 1;
+    }
+    std::path::PathBuf::from(String::from_utf8_lossy(&decoded).as_ref())
+}
 
 struct TrayBadgeState {
     base_rgba: Vec<u8>,

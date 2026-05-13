@@ -30,6 +30,8 @@ mime_guess = "2"
 
 [target.'cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))'.dependencies]
 webkit2gtk = "2"
+glib = "0.18"
+gtk = "0.18"
 
 [profile.release]
 opt-level = 3
