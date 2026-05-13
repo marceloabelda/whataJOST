@@ -42,6 +42,13 @@ struct ClipboardImage {
     mime_type: String,
 }
 
+#[derive(Debug, Clone, Serialize)]
+struct FileDropResult {
+    name: String,
+    data: String,
+    mime: String,
+}
+
 struct LogState(Arc<Mutex<Vec<LogEntry>>>);
 
 fn format_timestamp() -> String {
@@ -681,32 +688,73 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 e.preventDefault();
                 e.stopPropagation();
 
-                if (!e.dataTransfer || !e.dataTransfer.files || e.dataTransfer.files.length === 0) {
+                if (!e.dataTransfer) return;
+
+                function dispatchFilePaste(dt) {
+                    if (!dt.files.length) return;
+                    let pe;
+                    try { pe = new ClipboardEvent('paste', { bubbles: true, cancelable: true, clipboardData: dt }); }
+                    catch(_) {
+                        pe = new Event('paste', { bubbles: true, cancelable: true });
+                        Object.defineProperty(pe, 'clipboardData', { get: function() { return dt; }, configurable: true });
+                    }
+                    (document.activeElement || document.body).dispatchEvent(pe);
+                }
+
+                // Path 1: WebKit expone los archivos directamente en dataTransfer.files
+                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
+                    const dt = new DataTransfer();
+                    for (let i = 0; i < e.dataTransfer.files.length; i++) dt.items.add(e.dataTransfer.files[i]);
+                    dispatchFilePaste(dt);
                     return;
                 }
 
-                const dt = new DataTransfer();
-                for (let i = 0; i < e.dataTransfer.files.length; i++) {
-                    dt.items.add(e.dataTransfer.files[i]);
-                }
+                // Path 2: En Linux/WebKit2GTK los archivos no están en dataTransfer.files.
+                // text/uri-list contiene las URIs de los archivos (file://) o URLs (https://).
+                const rawUris = e.dataTransfer.getData('text/uri-list');
+                if (!rawUris) return;
+                const uris = rawUris.split(/\r?\n/).map(function(u) { return u.trim(); }).filter(function(u) { return u && !u.startsWith('#'); });
+                if (!uris.length) return;
 
-                let pasteEvent;
-                try {
-                    pasteEvent = new ClipboardEvent('paste', {
-                        bubbles: true,
-                        cancelable: true,
-                        clipboardData: dt
-                    });
-                } catch(_) {
-                    pasteEvent = new Event('paste', { bubbles: true, cancelable: true });
-                    Object.defineProperty(pasteEvent, 'clipboardData', {
-                        get: function() { return dt; },
-                        configurable: true
-                    });
-                }
+                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                    level: 'info',
+                    message: 'Drop via text/uri-list: ' + uris.join(', ')
+                });
 
-                const target = document.activeElement || document.body;
-                target.dispatchEvent(pasteEvent);
+                (async function() {
+                    const dt = new DataTransfer();
+                    for (const uri of uris) {
+                        try {
+                            if (uri.startsWith('file://')) {
+                                if (!window.__TAURI_INTERNALS__) continue;
+                                const path = decodeURIComponent(new URL(uri).pathname);
+                                const res = await window.__TAURI_INTERNALS__.invoke('read_file_for_drop', { path });
+                                if (res) {
+                                    const bin = atob(res.data), arr = new Uint8Array(bin.length);
+                                    for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                                    dt.items.add(new File([new Blob([arr], { type: res.mime })], res.name, { type: res.mime }));
+                                }
+                            } else if (uri.startsWith('http://') || uri.startsWith('https://')) {
+                                const resp = await fetch(uri);
+                                if (!resp.ok) throw new Error('HTTP ' + resp.status);
+                                const blob = await resp.blob();
+                                const name = decodeURIComponent(uri.split('/').pop().split('?')[0]) || 'archivo';
+                                const b64 = await new Promise(function(res, rej) {
+                                    const r = new FileReader(); r.onload = function() { res(r.result.split(',')[1]); }; r.onerror = rej; r.readAsDataURL(blob);
+                                });
+                                const bin = atob(b64), arr = new Uint8Array(bin.length);
+                                for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
+                                dt.items.add(new File([new Blob([arr], { type: blob.type || 'application/octet-stream' })], name, { type: blob.type || 'application/octet-stream' }));
+                            }
+                        } catch(err) {
+                            window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                                level: 'error',
+                                message: 'Drop: error con URI ' + uri + ': ' + (err.message || err)
+                            });
+                        }
+                    }
+                    dispatchFilePaste(dt);
+                })();
             }, true);
 
             // Intercept Notification API to show in-app toast
@@ -849,9 +897,10 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                             &data,
                         );
                         let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
+                        let mime = mime_guess::from_path(path).first_or_octet_stream().to_string();
                         files_json.push_str(&format!(
-                            r#"{{"name":"{}","data":"{}"}}"#,
-                            escaped_name, b64
+                            r#"{{"name":"{}","data":"{}","mime":"{}"}}"#,
+                            escaped_name, b64, mime
                         ));
                     }
                 } else {
@@ -864,7 +913,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             files_json.push(']');
 
             let _ = w.eval(&format!(
-                r#"(function(){{var files={};if(!files.length)return;var dt=new DataTransfer();for(var i=0;i<files.length;i++){{var f=files[i];var b=atob(f.data);var a=new Uint8Array(b.length);for(var j=0;j<b.length;j++)a[j]=b.charCodeAt(j);var blob=new Blob([a],{{type:"application/octet-stream"}});var file=new File([blob],f.name,{{type:"application/octet-stream"}});dt.items.add(file);}}var pe;try{{pe=new ClipboardEvent("paste",{{bubbles:true,cancelable:true,clipboardData:dt}});}}catch(_){{pe=new Event("paste",{{bubbles:true,cancelable:true}});Object.defineProperty(pe,"clipboardData",{{get:function(){{return dt;}},configurable:true}});}}(document.activeElement||document.body).dispatchEvent(pe);}})()"#,
+                r#"(function(){{var files={};if(!files.length)return;var dt=new DataTransfer();for(var i=0;i<files.length;i++){{var f=files[i];var b=atob(f.data);var a=new Uint8Array(b.length);for(var j=0;j<b.length;j++)a[j]=b.charCodeAt(j);var blob=new Blob([a],{{type:f.mime||"application/octet-stream"}});var file=new File([blob],f.name,{{type:f.mime||"application/octet-stream"}});dt.items.add(file);}}var pe;try{{pe=new ClipboardEvent("paste",{{bubbles:true,cancelable:true,clipboardData:dt}});}}catch(_){{pe=new Event("paste",{{bubbles:true,cancelable:true}});Object.defineProperty(pe,"clipboardData",{{get:function(){{return dt;}},configurable:true}});}}(document.activeElement||document.body).dispatchEvent(pe);}})()"#,
                 files_json
             ));
         }
@@ -1077,6 +1126,27 @@ fn list_clipboard_types(tool: &str) -> String {
                 .join(", ")
         })
         .unwrap_or_else(|| "(no disponible)".to_string())
+}
+
+#[tauri::command]
+fn read_file_for_drop(app: AppHandle, path: String) -> Option<FileDropResult> {
+    match std::fs::read(&path) {
+        Ok(data) => {
+            let name = std::path::Path::new(&path)
+                .file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("archivo")
+                .to_string();
+            let mime = mime_guess::from_path(&path).first_or_octet_stream().to_string();
+            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
+            log_message(&app, LogLevel::Info, format!("Drop: '{}' ({})", name, mime));
+            Some(FileDropResult { name, data: b64, mime })
+        }
+        Err(e) => {
+            log_message(&app, LogLevel::Error, format!("Drop: error leyendo '{}': {}", path, e));
+            None
+        }
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1371,6 +1441,7 @@ pub fn run() {
             close_notification,
             open_whatsapp,
             read_clipboard_image,
+            read_file_for_drop,
             save_file,
             update_unread_count,
             get_logs,

@@ -8,6 +8,7 @@ description = "Permite todos los comandos IPC usados desde la ventana de WhatsAp
 commands.allow = [
   "save_file",
   "read_clipboard_image",
+  "read_file_for_drop",
   "update_unread_count",
   "show_notification",
   "close_notification",

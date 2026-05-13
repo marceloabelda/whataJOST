@@ -65,7 +65,10 @@ La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script inyect
      - Invoca `read_clipboard_image` (IPC → `wl-paste --type image/png|jpeg|bmp|webp` o `xclip`, detectando la herramienta con `OnceLock`).
      - Si devuelve `null` → log de warning, no se pega nada.
      - Si devuelve `{data: base64, mime_type}` → decodifica el base64 a `Uint8Array`, crea un `Blob` y un `File('clipboard.ext')`, agrega a `DataTransfer` y despacha `ClipboardEvent` sintético al elemento activo → cae en rama 1 → WhatsApp lo recibe como imagen.
-- **Drag & drop**: intercepta `dragover`/`drop` y despacha paste sintético; `on_navigation` lee archivos `file://` arrastrados desde el SO y los inyecta vía `window.__tauriInjectDrop`
+- **Drag & drop** — tres capas de intercepción:
+  1. **DOM `drop`** (capture phase, lib.rs:~678): si `e.dataTransfer.files.length > 0` (WebKit expone los archivos), crea `DataTransfer` y despacha paste sintético. Si `files` está vacío (caso habitual en Linux/WebKit2GTK), lee `text/uri-list`: para `file://` URIs invoca `read_file_for_drop` vía IPC; para `https://` URIs hace `fetch`. Construye el `DataTransfer` con los blobs resultantes y despacha el paste.
+  2. **Tauri `DragDropEvent`** (`on_webview_event`, lib.rs:~870): intercepta drops nativos que Tauri captura antes del WebView. Lee los archivos con MIME type via `mime_guess` y despacha via `eval()`.
+  3. **`on_navigation` file://** (lib.rs:334): en WebKit antiguo/X11 el drop provoca una navegación `file://`; Rust la cancela, lee el archivo con `mime_guess` y llama `window.__tauriInjectDrop(name, b64, mime)` que despacha paste sintético.
 - **Links externos**: intercepta `window.open` y clicks en `<a>` no-WhatsApp para abrir en el browser del SO
 - **Menú contextual**: permite el menú nativo de WebKitGTK en campos editables (corrección ortográfica) bloqueando los listeners de WhatsApp en capture phase
 - **Badge no leídos**: observa `document.title` con `MutationObserver` + polling y llama `update_unread_count`
@@ -77,6 +80,7 @@ La ventana `whatsapp-web` carga `https://web.whatsapp.com/` con un script inyect
 |---|---|
 | `save_file(data, file_name)` | Abre `rfd::FileDialog`; si el diálogo no aparece (xdg-portal), guarda en `~/Downloads/WhataJOST/` y lo registra en logs |
 | `read_clipboard_image` | Lee imagen del portapapeles del sistema con `wl-paste` o `xclip` (detecta herramienta disponible con `OnceLock`) |
+| `read_file_for_drop(path)` | Lee un archivo local por path (usado desde el handler de drop cuando `dataTransfer.files` está vacío en Linux) |
 | `update_unread_count(count)` | Renderiza badge numérico sobre el ícono de bandeja (pixel art en RGBA, sin librerías de imágenes) |
 | `show_notification(title, body)` | Abre ventana `notification` (HTML transparente, always-on-top) que se auto-cierra a los 5,5 s |
 | `close_notification` | Cierra la ventana de notificación |
