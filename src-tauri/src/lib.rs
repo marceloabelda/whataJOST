@@ -278,17 +278,34 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
 
                             match install_result {
                                 Ok(status) if status.success() => {
-                                    // Relanzar: en Linux usamos un shell con delay para
-                                    // que single-instance del proceso viejo libere el lock
                                     #[cfg(target_os = "linux")]
                                     if let Ok(exe) = std::env::current_exe() {
-                                        let _ = std::process::Command::new("sh")
-                                            .arg("-c")
-                                            .arg(format!("sleep 2 && exec '{}'", exe.display()))
+                                        let pid = std::process::id().to_string();
+                                        let exe_str = exe.to_string_lossy().to_string();
+                                        log_message(&h, LogLevel::Info, format!(
+                                            "Instalación exitosa. Relanzando {} (PID actual: {})", exe_str, pid
+                                        ));
+                                        // Esperar que el PID viejo muera antes de exec: evita
+                                        // que el nuevo proceso vea el lock de single-instance activo.
+                                        match std::process::Command::new("sh")
+                                            .args([
+                                                "-c",
+                                                "while kill -0 \"$2\" 2>/dev/null; do sleep 0.2; done; exec \"$1\"",
+                                                "--",
+                                                &exe_str,
+                                                &pid,
+                                            ])
                                             .stdin(std::process::Stdio::null())
                                             .stdout(std::process::Stdio::null())
                                             .stderr(std::process::Stdio::null())
-                                            .spawn();
+                                            .spawn() {
+                                            Ok(child) => log_message(&h, LogLevel::Info, format!(
+                                                "Shell de relaunch iniciado (PID: {})", child.id()
+                                            )),
+                                            Err(e) => log_message(&h, LogLevel::Error, format!(
+                                                "Error al iniciar relaunch shell: {}", e
+                                            )),
+                                        }
                                     }
                                     #[cfg(target_os = "windows")]
                                     if let Ok(exe) = std::env::current_exe() {
