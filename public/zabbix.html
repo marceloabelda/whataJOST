@@ -116,7 +116,7 @@
       const severities = Array.from(document.querySelectorAll('.sev-chip input:checked'))
         .map(cb => parseInt(cb.value));
       if (!severities.length) { setStatus('Seleccioná al menos una severidad.', true); return; }
-      ipc.invoke('save_zabbix_config', { url, api_token: token, severities })
+      ipc.invoke('save_zabbix_config', { url, apiToken: token, severities })
         .then(() => {
           setStatus('Guardado. El estado se actualizará en segundos.');
           setTimeout(() => window.close(), 1800);
@@ -125,7 +125,7 @@
     }
 
     function clear_() {
-      ipc.invoke('save_zabbix_config', { url: '', api_token: '', severities: [] })
+      ipc.invoke('save_zabbix_config', { url: '', apiToken: '', severities: [] })
         .then(() => window.close())
         .catch(e => setStatus('Error: ' + e, true));
     }

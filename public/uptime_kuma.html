@@ -66,7 +66,7 @@
       const key = document.getElementById('key').value.trim();
       if (!url) { setStatus('Ingresá una URL válida.', true); return; }
       if (!key) { setStatus('Ingresá una API Key.', true); return; }
-      ipc.invoke('save_uptime_kuma_config', { url, api_key: key })
+      ipc.invoke('save_uptime_kuma_config', { url, apiKey: key })
         .then(() => {
           setStatus('Guardado. El estado se actualizará en segundos.');
           setTimeout(() => window.close(), 1800);
@@ -74,7 +74,7 @@
         .catch(e => setStatus('Error: ' + e, true));
     }
     function clear_() {
-      ipc.invoke('save_uptime_kuma_config', { url: '', api_key: '' })
+      ipc.invoke('save_uptime_kuma_config', { url: '', apiKey: '' })
         .then(() => window.close())
         .catch(e => setStatus('Error: ' + e, true));
     }
