@@ -54,7 +54,7 @@ struct LogState(Arc<Mutex<Vec<LogEntry>>>);
 // ── Uptime Kuma ──────────────────────────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq)]
-enum UkDotState { NotConfigured, AllUp, SomeDown, Unreachable }
+enum UkDotState { NotConfigured, AllUp, Down(u32), Unreachable }
 
 #[derive(Debug, Clone)]
 struct UptimeKumaMonitor { name: String, up: bool }
@@ -1257,10 +1257,10 @@ fn do_uptime_kuma_poll(app: &AppHandle) {
                             }
                         }
                     }
-                    let all_up = monitors.iter().all(|m| m.up);
+                    let down = monitors.iter().filter(|m| !m.up).count() as u32;
                     {
                         let b = app.state::<TrayBadgeState>();
-                        *b.uk_dot.lock().unwrap() = if all_up { UkDotState::AllUp } else { UkDotState::SomeDown };
+                        *b.uk_dot.lock().unwrap() = if down == 0 { UkDotState::AllUp } else { UkDotState::Down(down) };
                     }
                     regenerate_tray_icon(app);
                     update_tray_menu(app);
@@ -1415,14 +1415,25 @@ fn regenerate_tray_icon(app: &AppHandle) {
     let count = *badge.current_count.lock().unwrap();
     let uk_dot = badge.uk_dot.lock().unwrap().clone();
     let mut rgba = badge.base_rgba.clone();
-    // Punto de estado UK en esquina inferior izquierda (no interfiere con el badge de mensajes)
+    // Círculos UK en la franja inferior (no interfieren con el badge de mensajes en esquina superior derecha)
+    // Círculo verde si todo OK; N círculos rojos si N monitores caídos.
+    const R: f32 = 5.5;          // radio de cada círculo
+    const PITCH: f32 = R * 2.0 + 2.0; // distancia entre centros
+    const START_X: f32 = R + 2.0;     // centro del primer círculo
+    const DOT_Y: f32 = 64.0 - R - 1.5; // fila inferior
     match uk_dot {
-        UkDotState::AllUp =>
-            draw_filled_circle(&mut rgba, 64, 64, 10.0, 54.0, 8.0, 50, 205, 50),
-        UkDotState::SomeDown =>
-            draw_filled_circle(&mut rgba, 64, 64, 10.0, 54.0, 8.0, 255, 59, 48),
-        UkDotState::Unreachable =>
-            draw_filled_circle(&mut rgba, 64, 64, 10.0, 54.0, 8.0, 200, 140, 20),
+        UkDotState::AllUp => {
+            draw_filled_circle(&mut rgba, 64, 64, START_X, DOT_Y, R, 50, 205, 50);
+        }
+        UkDotState::Down(n) => {
+            let count = n.min(5); // máximo 5 círculos (caben en 64px)
+            for i in 0..count {
+                draw_filled_circle(&mut rgba, 64, 64, START_X + i as f32 * PITCH, DOT_Y, R, 255, 59, 48);
+            }
+        }
+        UkDotState::Unreachable => {
+            draw_filled_circle(&mut rgba, 64, 64, START_X, DOT_Y, R, 200, 140, 20);
+        }
         UkDotState::NotConfigured => {}
     }
     // Badge de mensajes no leídos en esquina superior derecha
