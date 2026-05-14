@@ -81,54 +81,96 @@
   <div id="status"></div>
 
   <script>
-    const ipc = window.__TAURI_INTERNALS__;
+    (function() {
+      var elUrl   = document.getElementById('url');
+      var elToken = document.getElementById('token');
+      var elSt    = document.getElementById('status');
+      var ipc = window.__TAURI_INTERNALS__;
 
-    // Actualizar chip visual al cambiar checkbox
-    document.querySelectorAll('.sev-chip').forEach(chip => {
-      const cb = chip.querySelector('input');
-      cb.addEventListener('change', () => {
-        chip.classList.toggle('checked', cb.checked);
+      if (!ipc) {
+        elSt.textContent = 'IPC no disponible. Revisá los permisos de la ventana.';
+        elSt.className = 'error';
+        return;
+      }
+
+      function setStatus(msg, error) {
+        elSt.textContent = msg;
+        elSt.className = error ? 'error' : '';
+      }
+
+      // Severity chip toggle
+      document.querySelectorAll('.sev-chip').forEach(function(chip) {
+        var cb = chip.querySelector('input');
+        cb.addEventListener('change', function() {
+          chip.classList.toggle('checked', cb.checked);
+        });
       });
-    });
 
-    ipc.invoke('get_zabbix_config').then(cfg => {
-      document.getElementById('url').value   = cfg.url       || '';
-      document.getElementById('token').value = cfg.api_token || '';
-      const sevs = cfg.severities || [4, 5];
-      document.querySelectorAll('.sev-chip input').forEach(cb => {
-        const checked = sevs.includes(parseInt(cb.value));
-        cb.checked = checked;
-        cb.closest('.sev-chip').classList.toggle('checked', checked);
-      });
-    });
+      function getSeverities() {
+        return Array.from(document.querySelectorAll('.sev-chip input:checked'))
+          .map(function(cb) { return parseInt(cb.value); });
+      }
 
-    function setStatus(msg, error) {
-      const el = document.getElementById('status');
-      el.textContent = msg;
-      el.className = error ? 'error' : '';
-    }
+      // Cargar config existente
+      try {
+        ipc.invoke('get_zabbix_config').then(function(cfg) {
+          elUrl.value   = cfg.url       || '';
+          elToken.value = cfg.api_token || '';
+          var sevs = cfg.severities || [4, 5];
+          document.querySelectorAll('.sev-chip input').forEach(function(cb) {
+            var checked = sevs.indexOf(parseInt(cb.value)) !== -1;
+            cb.checked = checked;
+            cb.closest('.sev-chip').classList.toggle('checked', checked);
+          });
+        }).catch(function(e) {
+          setStatus('Error al cargar config: ' + (e && (e.message || String(e))), true);
+        });
+      } catch(e) {
+        setStatus('Error sync al cargar: ' + (e && e.message), true);
+      }
 
-    function save() {
-      const url   = document.getElementById('url').value.trim();
-      const token = document.getElementById('token').value.trim();
-      if (!url)   { setStatus('Ingresá una URL válida.', true); return; }
-      if (!token) { setStatus('Ingresá un API Token.',   true); return; }
-      const severities = Array.from(document.querySelectorAll('.sev-chip input:checked'))
-        .map(cb => parseInt(cb.value));
-      if (!severities.length) { setStatus('Seleccioná al menos una severidad.', true); return; }
-      ipc.invoke('save_zabbix_config', { url, apiToken: token, severities })
-        .then(() => {
-          setStatus('Guardado. El estado se actualizará en segundos.');
-          setTimeout(() => window.close(), 1800);
-        })
-        .catch(e => setStatus('Error: ' + e, true));
-    }
+      window.save = function() {
+        var url   = elUrl.value.trim();
+        var token = elToken.value.trim();
+        if (!url)   { setStatus('Ingresá una URL válida.', true); return; }
+        if (!token) { setStatus('Ingresá un API Token.', true);   return; }
+        var severities = getSeverities();
+        if (!severities.length) { setStatus('Seleccioná al menos una severidad.', true); return; }
+        setStatus('Guardando...');
+        try {
+          var p = ipc.invoke('save_zabbix_config', { url: url, apiToken: token, severities: severities });
+          if (!p || typeof p.then !== 'function') {
+            setStatus('Error: invoke no devolvió Promise. Tipo: ' + typeof p, true);
+            return;
+          }
+          p.then(function() {
+            setStatus('Guardado. Podés cerrar esta ventana.');
+          }).catch(function(e) {
+            setStatus('Error: ' + (e && (e.message || String(e))), true);
+          });
+        } catch(e) {
+          setStatus('Error sync al guardar: ' + (e && e.message), true);
+        }
+      };
 
-    function clear_() {
-      ipc.invoke('save_zabbix_config', { url: '', apiToken: '', severities: [] })
-        .then(() => window.close())
-        .catch(e => setStatus('Error: ' + e, true));
-    }
+      window.clear_ = function() {
+        setStatus('Quitando config...');
+        try {
+          var p = ipc.invoke('save_zabbix_config', { url: '', apiToken: '', severities: [] });
+          if (!p || typeof p.then !== 'function') {
+            setStatus('Error: invoke no devolvió Promise. Tipo: ' + typeof p, true);
+            return;
+          }
+          p.then(function() {
+            setStatus('Configuración quitada. Podés cerrar esta ventana.');
+          }).catch(function(e) {
+            setStatus('Error: ' + (e && (e.message || String(e))), true);
+          });
+        } catch(e) {
+          setStatus('Error sync al quitar: ' + (e && e.message), true);
+        }
+      };
+    })();
   </script>
 </body>
 </html>

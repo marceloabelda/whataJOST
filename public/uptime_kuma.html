@@ -51,33 +51,75 @@
   </p>
   <div id="status"></div>
   <script>
-    const ipc = window.__TAURI_INTERNALS__;
-    ipc.invoke('get_uptime_kuma_config').then(cfg => {
-      document.getElementById('url').value = cfg.url || '';
-      document.getElementById('key').value = cfg.api_key || '';
-    });
-    function setStatus(msg, error) {
-      const el = document.getElementById('status');
-      el.textContent = msg;
-      el.className = error ? 'error' : '';
-    }
-    function save() {
-      const url = document.getElementById('url').value.trim();
-      const key = document.getElementById('key').value.trim();
-      if (!url) { setStatus('Ingresá una URL válida.', true); return; }
-      if (!key) { setStatus('Ingresá una API Key.', true); return; }
-      ipc.invoke('save_uptime_kuma_config', { url, apiKey: key })
-        .then(() => {
-          setStatus('Guardado. El estado se actualizará en segundos.');
-          setTimeout(() => window.close(), 1800);
-        })
-        .catch(e => setStatus('Error: ' + e, true));
-    }
-    function clear_() {
-      ipc.invoke('save_uptime_kuma_config', { url: '', apiKey: '' })
-        .then(() => window.close())
-        .catch(e => setStatus('Error: ' + e, true));
-    }
+    (function() {
+      var elUrl   = document.getElementById('url');
+      var elKey   = document.getElementById('key');
+      var elSt    = document.getElementById('status');
+      var ipc = window.__TAURI_INTERNALS__;
+
+      if (!ipc) {
+        elSt.textContent = 'IPC no disponible. Revisá los permisos de la ventana.';
+        elSt.className = 'error';
+        return;
+      }
+
+      function setStatus(msg, error) {
+        elSt.textContent = msg;
+        elSt.className = error ? 'error' : '';
+      }
+
+      // Cargar config existente
+      try {
+        ipc.invoke('get_uptime_kuma_config').then(function(cfg) {
+          elUrl.value = cfg.url || '';
+          elKey.value = cfg.api_key || '';
+        }).catch(function(e) {
+          setStatus('Error al cargar config: ' + (e && (e.message || String(e))), true);
+        });
+      } catch(e) {
+        setStatus('Error sync al cargar: ' + (e && e.message), true);
+      }
+
+      window.save = function() {
+        var url = elUrl.value.trim();
+        var key = elKey.value.trim();
+        if (!url)  { setStatus('Ingresá una URL válida.', true); return; }
+        if (!key)  { setStatus('Ingresá una API Key.', true); return; }
+        setStatus('Guardando...');
+        try {
+          var p = ipc.invoke('save_uptime_kuma_config', { url: url, apiKey: key });
+          if (!p || typeof p.then !== 'function') {
+            setStatus('Error: invoke no devolvió Promise. Tipo: ' + typeof p, true);
+            return;
+          }
+          p.then(function() {
+            setStatus('Guardado. Podés cerrar esta ventana.');
+          }).catch(function(e) {
+            setStatus('Error: ' + (e && (e.message || String(e))), true);
+          });
+        } catch(e) {
+          setStatus('Error sync al guardar: ' + (e && e.message), true);
+        }
+      };
+
+      window.clear_ = function() {
+        setStatus('Quitando config...');
+        try {
+          var p = ipc.invoke('save_uptime_kuma_config', { url: '', apiKey: '' });
+          if (!p || typeof p.then !== 'function') {
+            setStatus('Error: invoke no devolvió Promise. Tipo: ' + typeof p, true);
+            return;
+          }
+          p.then(function() {
+            setStatus('Configuración quitada. Podés cerrar esta ventana.');
+          }).catch(function(e) {
+            setStatus('Error: ' + (e && (e.message || String(e))), true);
+          });
+        } catch(e) {
+          setStatus('Error sync al quitar: ' + (e && e.message), true);
+        }
+      };
+    })();
   </script>
 </body>
 </html>
