@@ -32,32 +32,6 @@ es un fork de https://github.com/jude7733/whatauri
 - [ ] Agregar el el tray, Minimize to tray
 
 
-## Installation
-
-### Debian / Ubuntu
-
-```bash
-sudo dpkg -i whataJOST_*_amd64.deb
-# Si faltan dependencias:
-sudo apt install -f
-```
-
-Dependencias que instala automáticamente: `xclip`, `wl-clipboard`, `policykit-1`.
-
-### Fedora
-
-```bash
-sudo rpm -i whataJOST-*.x86_64.rpm
-```
-
-### Desde código
-
-```bash
-git clone https://github.com/marceloabelda/whataJOST.git
-cd whataJOST
-pnpm install
-pnpm tauri dev
-```
 
 ## Icon
 
