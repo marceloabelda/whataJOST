@@ -1691,7 +1691,7 @@ pub fn run() {
             #[cfg(desktop)]
             {
                 use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
-                let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyW);
+                let shortcut = Shortcut::new(Some(Modifiers::SUPER | Modifiers::ALT), Code::KeyW);
                 app.handle().plugin(
                     tauri_plugin_global_shortcut::Builder::new()
                         .with_handler(|app, _shortcut, event| {
@@ -1708,8 +1708,8 @@ pub fn run() {
                         .build()
                 )?;
                 match app.global_shortcut().register(shortcut) {
-                    Ok(_) => log_message(app.handle(), LogLevel::Info, "Atajo registrado: Ctrl+Shift+W"),
-                    Err(e) => log_message(app.handle(), LogLevel::Warn, format!("No se pudo registrar atajo Ctrl+Shift+W: {}", e)),
+                    Ok(_) => log_message(app.handle(), LogLevel::Info, "Atajo registrado: Win+Alt+W"),
+                    Err(e) => log_message(app.handle(), LogLevel::Warn, format!("No se pudo registrar atajo Win+Alt+W: {}", e)),
                 }
             }
 
