@@ -23,6 +23,7 @@ tauri-plugin-clipboard-manager = "2.3.2"
 tauri-plugin-updater = "2"
 tauri-plugin-autostart = "2"
 tauri-plugin-global-shortcut = "2"
+tauri-plugin-notification = "2"
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 mime_guess = "2"
