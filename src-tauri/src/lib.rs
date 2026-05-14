@@ -1156,6 +1156,7 @@ struct TrayBadgeState {
 }
 
 struct NotificationPopupState(Mutex<bool>);
+struct FloatingBarState(Mutex<bool>);
 
 fn config_path(app: &AppHandle) -> std::path::PathBuf {
     let dir = app.path().app_config_dir().expect("failed to get config dir");
@@ -1179,6 +1180,25 @@ fn save_notification_enabled(app: &AppHandle, enabled: bool) {
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
     json["notifications_enabled"] = serde_json::Value::Bool(enabled);
+    std::fs::write(&path, json.to_string()).ok();
+}
+
+fn load_floating_bar_visible(app: &AppHandle) -> bool {
+    let path = config_path(app);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("floating_bar_visible").and_then(|e| e.as_bool()))
+        .unwrap_or(false)
+}
+
+fn save_floating_bar_visible(app: &AppHandle, visible: bool) {
+    let path = config_path(app);
+    let mut json: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    json["floating_bar_visible"] = serde_json::Value::Bool(visible);
     std::fs::write(&path, json.to_string()).ok();
 }
 
@@ -1617,10 +1637,12 @@ fn regenerate_tray_icon(app: &AppHandle) {
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let autostart_enabled     = app.autolaunch().is_enabled().unwrap_or(false);
     let notifications_enabled = *app.state::<NotificationPopupState>().0.lock().unwrap();
+    let floating_bar_enabled  = *app.state::<FloatingBarState>().0.lock().unwrap();
 
     let show_item      = MenuItem::with_id(app, "show",          "Abrir WhatsApp",          true, None::<&str>)?;
     let autostart_item = CheckMenuItem::with_id(app, "autostart","Iniciar con el sistema",   true, autostart_enabled,     None::<&str>)?;
     let notify_item    = CheckMenuItem::with_id(app, "toggle_notify","Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
+    let bar_item       = CheckMenuItem::with_id(app, "floating_bar", "Barra flotante",       true, floating_bar_enabled,  None::<&str>)?;
     let update_item    = MenuItem::with_id(app, "update",         "Buscar actualización",    true, None::<&str>)?;
     let uk_cfg_item    = MenuItem::with_id(app, "uk_config",      "Configurar Uptime Kuma",  true, None::<&str>)?;
     let zbx_cfg_item   = MenuItem::with_id(app, "zbx_config",    "Configurar Zabbix",       true, None::<&str>)?;
@@ -1677,7 +1699,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     }
 
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
-        &show_item, &autostart_item, &notify_item, &update_item,
+        &show_item, &autostart_item, &notify_item, &bar_item, &update_item,
     ];
     if let Some(ref sub) = uk_sub  { items.push(sub); }
     if let Some(ref sub) = zbx_sub { items.push(sub); }
@@ -1686,7 +1708,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     items.push(&logs_item);
     items.push(&quit_item);
 
-    let _ = (&uk_items, &zbx_items);
+    let _ = (&uk_items, &zbx_items, &bar_item);
     Menu::with_items(app, &items)
 }
 
@@ -1743,6 +1765,77 @@ fn open_uptime_kuma_config_window(app: &AppHandle) {
     if let Err(e) = result {
         log_message(app, LogLevel::Error, format!("Error al abrir config UK: {e}"));
     }
+}
+
+fn create_floating_bar_window(app: &AppHandle) {
+    if app.get_webview_window("floating-bar").is_some() { return; }
+    let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size  = monitor.size();
+        let pos   = monitor.position();
+        let lw    = size.width as f64 / scale;
+        (pos.x as f64 / scale + (lw - 420.0) / 2.0,
+         pos.y as f64 / scale + 10.0)
+    } else { (200.0, 10.0) };
+    let result = WebviewWindowBuilder::new(app, "floating-bar", WebviewUrl::App("floating_bar.html".into()))
+        .title("WhataJOST")
+        .inner_size(420.0, 44.0)
+        .position(x, y)
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .build();
+    match result {
+        Ok(win) => {
+            win.on_window_event(move |event| {
+                if matches!(event, WindowEvent::CloseRequested { .. }) {
+                    // La barra flotante no se puede cerrar con el botón X;
+                    // se oculta desde el menú del tray.
+                }
+            });
+        }
+        Err(e) => log_message(app, LogLevel::Error, format!("Error al abrir barra flotante: {e}")),
+    }
+}
+
+#[derive(serde::Serialize, Clone)]
+struct BarMonitor { name: String, up: bool }
+
+#[derive(serde::Serialize, Clone)]
+struct BarProblem { name: String, severity: u8, severity_label: String }
+
+#[derive(serde::Serialize)]
+struct MonitoringBarStatus {
+    uk_configured: bool,
+    uk_reachable: bool,
+    uk_monitors: Vec<BarMonitor>,
+    zbx_configured: bool,
+    zbx_reachable: bool,
+    zbx_problems: Vec<BarProblem>,
+}
+
+#[tauri::command]
+fn get_monitoring_status(app: AppHandle) -> MonitoringBarStatus {
+    let uk_guard  = app.state::<UptimeKumaState>().0.lock().unwrap().clone();
+    let zbx_guard = app.state::<ZabbixState>().0.lock().unwrap().clone();
+
+    let (uk_configured, uk_reachable, uk_monitors) = match uk_guard {
+        Some(s) => (true, s.reachable, s.monitors.iter().map(|m| BarMonitor { name: m.name.clone(), up: m.up }).collect()),
+        None    => (false, false, vec![]),
+    };
+
+    let (zbx_configured, zbx_reachable, zbx_problems) = match zbx_guard {
+        Some(s) => (true, s.reachable, s.problems.iter().map(|p| BarProblem {
+            name: p.name.clone(),
+            severity: p.severity,
+            severity_label: SEVERITY_LABELS.get(p.severity as usize).copied().unwrap_or("?").to_string(),
+        }).collect()),
+        None => (false, false, vec![]),
+    };
+
+    MonitoringBarStatus { uk_configured, uk_reachable, uk_monitors, zbx_configured, zbx_reachable, zbx_problems }
 }
 
 #[cfg(target_os = "linux")]
@@ -2119,11 +2212,14 @@ pub fn run() {
             get_uptime_kuma_config,
             save_uptime_kuma_config,
             get_zabbix_config,
-            save_zabbix_config
+            save_zabbix_config,
+            get_monitoring_status
         ])
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());
+            let floating_bar_visible  = load_floating_bar_visible(app.handle());
             app.manage(NotificationPopupState(Mutex::new(notifications_enabled)));
+            app.manage(FloatingBarState(Mutex::new(floating_bar_visible)));
             app.manage(LogState(Arc::new(Mutex::new(Vec::new()))));
             app.manage(UptimeKumaState(Mutex::new(None)));
             app.manage(UptimeKumaTrigger(Mutex::new(None)));
@@ -2132,6 +2228,9 @@ pub fn run() {
             log_message(app.handle(), LogLevel::Info, "WhataJOST iniciado");
 
             create_whatsapp_window(app.handle())?;
+            if floating_bar_visible {
+                create_floating_bar_window(app.handle());
+            }
 
             // Manejar deep link si la app fue lanzada con una URL whatsapp://
             let launch_url = std::env::args()
@@ -2172,6 +2271,21 @@ pub fn run() {
                         let mut enabled = state.0.lock().unwrap();
                         *enabled = !*enabled;
                         save_notification_enabled(app, *enabled);
+                    }
+                    "floating_bar" => {
+                        let new_visible = {
+                            let state = app.state::<FloatingBarState>();
+                            let mut v = state.0.lock().unwrap();
+                            *v = !*v;
+                            *v
+                        };
+                        save_floating_bar_visible(app, new_visible);
+                        if new_visible {
+                            create_floating_bar_window(app);
+                        } else if let Some(win) = app.get_webview_window("floating-bar") {
+                            let _ = win.close();
+                        }
+                        update_tray_menu(app);
                     }
                     "autostart" => {
                         let enabled = app.autolaunch().is_enabled().unwrap_or(false);
