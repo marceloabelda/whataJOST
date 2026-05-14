@@ -1756,6 +1756,31 @@ pub fn run() {
                 check_for_updates_impl(&handle, true);
             });
 
+            #[cfg(desktop)]
+            {
+                use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
+                let shortcut = Shortcut::new(Some(Modifiers::CONTROL | Modifiers::SHIFT), Code::KeyW);
+                app.handle().plugin(
+                    tauri_plugin_global_shortcut::Builder::new()
+                        .with_handler(|app, _shortcut, event| {
+                            if event.state() == ShortcutState::Pressed {
+                                if let Some(win) = app.get_webview_window("whatsapp-web") {
+                                    if win.is_visible().unwrap_or(false) {
+                                        let _ = win.hide();
+                                    } else {
+                                        show_window(app);
+                                    }
+                                }
+                            }
+                        })
+                        .build()
+                )?;
+                match app.global_shortcut().register(shortcut) {
+                    Ok(_) => log_message(app.handle(), LogLevel::Info, "Atajo registrado: Ctrl+Shift+W"),
+                    Err(e) => log_message(app.handle(), LogLevel::Warn, format!("No se pudo registrar atajo Ctrl+Shift+W: {}", e)),
+                }
+            }
+
             Ok(())
         })
         .run(tauri::generate_context!())
