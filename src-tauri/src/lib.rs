@@ -1243,11 +1243,13 @@ fn poll_uptime_kuma_metrics(url: &str, api_key: &str) -> Result<Vec<UptimeKumaMo
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
         .build();
+    // Uptime Kuma usa Basic Auth con usuario vacío y la API key como contraseña.
+    // Si ya tiene ":" (formato usuario:contraseña o :key), usarlo tal cual.
     let auth_header = if api_key.contains(':') {
-            // Basic Auth con usuario:contraseña (Uptime Kuma sin API keys)
             format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(api_key.as_bytes()))
         } else {
-            format!("apikey {}", api_key)
+            // Formato estándar: usuario vacío, API key como password
+            format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(format!(":{}", api_key).as_bytes()))
         };
     let resp = agent
         .get(&metrics_url)
