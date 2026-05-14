@@ -23,8 +23,7 @@
       border: 1px solid rgba(137, 180, 250, 0.18);
       cursor: grab;
     }
-    #bar[data-tauri-drag-region] { cursor: grab; }
-    #bar[data-tauri-drag-region]:active { cursor: grabbing; }
+    #bar.dragging { cursor: grabbing; }
 
     .section {
       display: flex;
@@ -72,7 +71,7 @@
   </style>
 </head>
 <body>
-  <div id="bar" data-tauri-drag-region>
+  <div id="bar">
     <div class="section" id="uk-section">
       <span class="section-label">UK</span>
       <div class="dots" id="uk-dots"></div>
@@ -88,6 +87,28 @@
 
   <script>
     const ipc = window.__TAURI_INTERNALS__;
+
+    // ── Drag manual (data-tauri-drag-region tiene problemas en Wayland) ──
+    let drag = null;
+    document.getElementById('bar').addEventListener('mousedown', async (e) => {
+      if (e.button !== 0) return;
+      e.preventDefault();
+      try {
+        const pos = await ipc.invoke('plugin:window|outer_position');
+        drag = { startMX: e.screenX, startMY: e.screenY, winX: pos.x, winY: pos.y };
+        document.getElementById('bar').classList.add('dragging');
+      } catch(_) {}
+    });
+    document.addEventListener('mousemove', (e) => {
+      if (!drag) return;
+      const x = drag.winX + e.screenX - drag.startMX;
+      const y = drag.winY + e.screenY - drag.startMY;
+      ipc.invoke('plugin:window|set_position', { position: { Physical: { x, y } } }).catch(() => {});
+    });
+    document.addEventListener('mouseup', () => {
+      drag = null;
+      document.getElementById('bar').classList.remove('dragging');
+    });
 
     function dot(cls, title) {
       const d = document.createElement('div');
