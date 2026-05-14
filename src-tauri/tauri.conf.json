@@ -33,6 +33,11 @@
       "icons/icon.ico"
     ],
     "createUpdaterArtifacts": true,
+    "windows": {
+      "wix": {
+        "language": "es-ES"
+      }
+    },
     "linux": {
       "deb": {
         "depends": ["xclip", "wl-clipboard", "fonts-noto-color-emoji"],
