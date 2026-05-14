@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "zabbix-window",
+  "description": "Allow the Zabbix config window to invoke config commands",
+  "windows": ["zabbix-config"],
+  "permissions": [
+    "core:default",
+    "allow-whatsapp-ipc"
+  ]
+}

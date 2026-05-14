@@ -65,6 +65,24 @@ struct UptimeKumaStatus { monitors: Vec<UptimeKumaMonitor>, reachable: bool }
 struct UptimeKumaState(Mutex<Option<UptimeKumaStatus>>);
 struct UptimeKumaTrigger(Mutex<Option<std::sync::mpsc::Sender<()>>>);
 
+// ── Zabbix ───────────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+enum ZbxDotState { NotConfigured, Ok, Problems(u32), Unreachable }
+
+#[derive(Debug, Clone)]
+struct ZabbixProblem { name: String, severity: u8 }
+
+#[derive(Debug, Clone)]
+struct ZabbixStatus { problems: Vec<ZabbixProblem>, reachable: bool }
+
+struct ZabbixState(Mutex<Option<ZabbixStatus>>);
+struct ZabbixTrigger(Mutex<Option<std::sync::mpsc::Sender<()>>>);
+
+const SEVERITY_LABELS: [&str; 6] = [
+    "No clasificado", "Información", "Advertencia", "Promedio", "Alto", "Desastre",
+];
+
 fn format_timestamp() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -1134,6 +1152,7 @@ struct TrayBadgeState {
     base_rgba: Vec<u8>,
     current_count: Mutex<u32>,
     uk_dot: Mutex<UkDotState>,
+    zbx_dot: Mutex<ZbxDotState>,
 }
 
 struct NotificationPopupState(Mutex<bool>);
@@ -1300,6 +1319,142 @@ fn do_uptime_kuma_poll(app: &AppHandle) {
     }
 }
 
+// ── Zabbix config + polling ───────────────────────────────────────────────────
+
+fn load_zabbix_config(app: &AppHandle) -> Option<(String, String, Vec<u8>)> {
+    let path = config_path(app);
+    let v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    let url   = v.get("zabbix_url")?.as_str()?;
+    let token = v.get("zabbix_api_token")?.as_str()?;
+    if url.is_empty() || token.is_empty() { return None; }
+    let severities: Vec<u8> = v.get("zabbix_severities")
+        .and_then(|s| s.as_array())
+        .map(|arr| arr.iter().filter_map(|x| x.as_u64().map(|n| n as u8)).collect())
+        .unwrap_or_else(|| vec![4, 5]); // default: Alto + Desastre
+    Some((url.to_string(), token.to_string(), severities))
+}
+
+fn save_zabbix_config_to_disk(app: &AppHandle, url: &str, token: &str, severities: &[u8]) {
+    let path = config_path(app);
+    let mut json: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    json["zabbix_url"]        = serde_json::Value::String(url.to_string());
+    json["zabbix_api_token"]  = serde_json::Value::String(token.to_string());
+    json["zabbix_severities"] = serde_json::json!(severities);
+    std::fs::write(&path, json.to_string()).ok();
+}
+
+fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec<ZabbixProblem>, String> {
+    let api_url = format!("{}/api_jsonrpc.php", url.trim_end_matches('/'));
+    let body = serde_json::json!({
+        "jsonrpc": "2.0",
+        "method": "problem.get",
+        "params": {
+            "output": ["eventid", "name", "severity"],
+            "severities": severities,
+            "suppressed": false,
+            "recent": false
+        },
+        "auth": token,
+        "id": 1
+    });
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let resp = agent
+        .post(&api_url)
+        .set("Content-Type", "application/json-rpc")
+        .set("Authorization", &format!("Bearer {}", token))
+        .send_string(&body.to_string())
+        .map_err(|e| e.to_string())?;
+    let text = resp.into_string().map_err(|e| e.to_string())?;
+    let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
+    if let Some(err) = json.get("error") {
+        return Err(err.get("data").and_then(|d| d.as_str()).unwrap_or("API error").to_string());
+    }
+    let result = json.get("result").and_then(|r| r.as_array())
+        .ok_or_else(|| "respuesta inesperada".to_string())?;
+    let problems = result.iter().filter_map(|p| {
+        let name = p.get("name")?.as_str()?.to_string();
+        let severity = p.get("severity")?.as_str()?.parse::<u8>().ok()?;
+        Some(ZabbixProblem { name, severity })
+    }).collect();
+    Ok(problems)
+}
+
+fn do_zabbix_poll(app: &AppHandle) {
+    match load_zabbix_config(app) {
+        Some((url, token, severities)) => {
+            match poll_zabbix_problems(&url, &token, &severities) {
+                Ok(problems) => {
+                    let prev = {
+                        let state = app.state::<ZabbixState>();
+                        let mut g = state.0.lock().unwrap();
+                        let prev = g.clone();
+                        *g = Some(ZabbixStatus { problems: problems.clone(), reachable: true });
+                        prev
+                    };
+                    // Notificar cambios
+                    let notify_on = *app.state::<NotificationPopupState>().0.lock().unwrap();
+                    if notify_on {
+                        for p in &problems {
+                            let already_known = prev.as_ref()
+                                .map(|s| s.problems.iter().any(|pp| pp.name == p.name))
+                                .unwrap_or(false);
+                            if !already_known {
+                                let sev = SEVERITY_LABELS.get(p.severity as usize).copied().unwrap_or("?");
+                                show_notification_internal(app, &format!("⚠ Zabbix — {}", sev), &p.name);
+                            }
+                        }
+                        if let Some(ref s) = prev {
+                            for pp in &s.problems {
+                                let resolved = !problems.iter().any(|p| p.name == pp.name);
+                                if resolved {
+                                    show_notification_internal(app, "✓ Zabbix — Resuelto", &pp.name);
+                                }
+                            }
+                        }
+                    }
+                    let n = problems.len() as u32;
+                    *app.state::<TrayBadgeState>().zbx_dot.lock().unwrap() =
+                        if n == 0 { ZbxDotState::Ok } else { ZbxDotState::Problems(n) };
+                    regenerate_tray_icon(app);
+                    update_tray_menu(app);
+                    log_message(app, LogLevel::Info, format!("Zabbix: {} problema(s) activo(s)", n));
+                }
+                Err(e) => {
+                    {
+                        let state = app.state::<ZabbixState>();
+                        let mut g = state.0.lock().unwrap();
+                        match *g {
+                            Some(ref mut s) => s.reachable = false,
+                            None => *g = Some(ZabbixStatus { problems: vec![], reachable: false }),
+                        }
+                    }
+                    *app.state::<TrayBadgeState>().zbx_dot.lock().unwrap() = ZbxDotState::Unreachable;
+                    regenerate_tray_icon(app);
+                    update_tray_menu(app);
+                    log_message(app, LogLevel::Warn, format!("Zabbix: error: {}", e));
+                }
+            }
+        }
+        None => {
+            let prev = app.state::<TrayBadgeState>().zbx_dot.lock().unwrap().clone();
+            if prev != ZbxDotState::NotConfigured {
+                *app.state::<ZabbixState>().0.lock().unwrap() = None;
+                *app.state::<TrayBadgeState>().zbx_dot.lock().unwrap() = ZbxDotState::NotConfigured;
+                regenerate_tray_icon(app);
+                update_tray_menu(app);
+            }
+        }
+    }
+}
+
 // --- tray badge rendering ---
 
 const DIGIT_PATTERNS: [[u8; 7]; 10] = [
@@ -1412,101 +1567,154 @@ fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, count: u32) {
 
 fn regenerate_tray_icon(app: &AppHandle) {
     let badge = app.state::<TrayBadgeState>();
-    let count = *badge.current_count.lock().unwrap();
-    let uk_dot = badge.uk_dot.lock().unwrap().clone();
+    let count   = *badge.current_count.lock().unwrap();
+    let uk_dot  = badge.uk_dot.lock().unwrap().clone();
+    let zbx_dot = badge.zbx_dot.lock().unwrap().clone();
     let mut rgba = badge.base_rgba.clone();
-    // Círculos UK en la franja inferior (no interfieren con el badge de mensajes en esquina superior derecha)
-    // Círculo verde si todo OK; N círculos rojos si N monitores caídos.
-    const R: f32 = 5.5;          // radio de cada círculo
-    const PITCH: f32 = R * 2.0 + 2.0; // distancia entre centros
-    const START_X: f32 = R + 2.0;     // centro del primer círculo
-    const DOT_Y: f32 = 64.0 - R - 1.5; // fila inferior
+
+    // Parámetros comunes para los círculos de monitoreo
+    const R: f32 = 5.5;
+    const PITCH: f32 = R * 2.0 + 2.0;
+    const START_X: f32 = R + 2.0;
+    // Fila inferior: UK  (y=57)
+    // Fila superior: Zabbix (y=44)
+    const UK_Y:  f32 = 64.0 - R - 1.5;
+    const ZBX_Y: f32 = UK_Y - (R * 2.0 + 2.0);
+
+    fn draw_dots(rgba: &mut Vec<u8>, n: u32, y: f32, r: u8, g: u8, b: u8) {
+        let count = n.min(5);
+        for i in 0..count {
+            draw_filled_circle(rgba, 64, 64, START_X + i as f32 * PITCH, y, R, r, g, b);
+        }
+    }
+
+    // Fila UK (inferior)
     match uk_dot {
-        UkDotState::AllUp => {
-            draw_filled_circle(&mut rgba, 64, 64, START_X, DOT_Y, R, 50, 205, 50);
-        }
-        UkDotState::Down(n) => {
-            let count = n.min(5); // máximo 5 círculos (caben en 64px)
-            for i in 0..count {
-                draw_filled_circle(&mut rgba, 64, 64, START_X + i as f32 * PITCH, DOT_Y, R, 255, 59, 48);
-            }
-        }
-        UkDotState::Unreachable => {
-            draw_filled_circle(&mut rgba, 64, 64, START_X, DOT_Y, R, 200, 140, 20);
-        }
+        UkDotState::AllUp       => draw_filled_circle(&mut rgba, 64, 64, START_X, UK_Y, R, 50, 205, 50),
+        UkDotState::Down(n)     => draw_dots(&mut rgba, n, UK_Y, 255, 59, 48),
+        UkDotState::Unreachable => draw_filled_circle(&mut rgba, 64, 64, START_X, UK_Y, R, 200, 140, 20),
         UkDotState::NotConfigured => {}
     }
-    // Badge de mensajes no leídos en esquina superior derecha
+
+    // Fila Zabbix (encima de UK)
+    match zbx_dot {
+        ZbxDotState::Ok           => draw_filled_circle(&mut rgba, 64, 64, START_X, ZBX_Y, R, 50, 205, 50),
+        ZbxDotState::Problems(n)  => draw_dots(&mut rgba, n, ZBX_Y, 255, 59, 48),
+        ZbxDotState::Unreachable  => draw_filled_circle(&mut rgba, 64, 64, START_X, ZBX_Y, R, 200, 140, 20),
+        ZbxDotState::NotConfigured => {}
+    }
+
+    // Badge mensajes no leídos (esquina superior derecha)
     if count > 0 {
         draw_filled_circle(&mut rgba, 64, 64, 48.0, 16.0, 14.0, 255, 59, 48);
         draw_count_text(&mut rgba, 64, 48.0, 16.0, count);
     }
+
     let tray = app.state::<TrayIcon>();
     let _ = tray.set_icon(Some(Image::new_owned(rgba, 64, 64)));
 }
 
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    let autostart_enabled     = app.autolaunch().is_enabled().unwrap_or(false);
     let notifications_enabled = *app.state::<NotificationPopupState>().0.lock().unwrap();
 
-    let show_item     = MenuItem::with_id(app, "show", "Abrir WhatsApp", true, None::<&str>)?;
-    let autostart_item = CheckMenuItem::with_id(app, "autostart", "Iniciar con el sistema", true, autostart_enabled, None::<&str>)?;
-    let notify_item   = CheckMenuItem::with_id(app, "toggle_notify", "Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
-    let update_item   = MenuItem::with_id(app, "update", "Buscar actualización", true, None::<&str>)?;
-    let uk_cfg_item   = MenuItem::with_id(app, "uk_config", "Configurar Uptime Kuma", true, None::<&str>)?;
-    let logs_item     = MenuItem::with_id(app, "logs", "Ver logs", true, None::<&str>)?;
-    let quit_item     = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
+    let show_item      = MenuItem::with_id(app, "show",          "Abrir WhatsApp",          true, None::<&str>)?;
+    let autostart_item = CheckMenuItem::with_id(app, "autostart","Iniciar con el sistema",   true, autostart_enabled,     None::<&str>)?;
+    let notify_item    = CheckMenuItem::with_id(app, "toggle_notify","Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
+    let update_item    = MenuItem::with_id(app, "update",         "Buscar actualización",    true, None::<&str>)?;
+    let uk_cfg_item    = MenuItem::with_id(app, "uk_config",      "Configurar Uptime Kuma",  true, None::<&str>)?;
+    let zbx_cfg_item   = MenuItem::with_id(app, "zbx_config",    "Configurar Zabbix",       true, None::<&str>)?;
+    let logs_item      = MenuItem::with_id(app, "logs",           "Ver logs",                true, None::<&str>)?;
+    let quit_item      = MenuItem::with_id(app, "quit",           "Salir",                   true, None::<&str>)?;
 
+    // ── Submenu UK ───────────────────────────────────────────────────────────
     let uk_status = app.state::<UptimeKumaState>().0.lock().unwrap().clone();
-
     let uk_sub: Option<Submenu<tauri::Wry>>;
-    let monitor_items: Vec<MenuItem<tauri::Wry>>;
+    let uk_items: Vec<MenuItem<tauri::Wry>>;
 
-    if let Some(ref status) = uk_status {
-        let up = status.monitors.iter().filter(|m| m.up).count();
-        let total = status.monitors.len();
-        let (icon, detail) = if !status.reachable {
-            ("⚠", "sin conexión".to_string())
-        } else if up == total && total > 0 {
-            ("●", format!("{}/{} operativos", up, total))
+    if let Some(ref s) = uk_status {
+        let up    = s.monitors.iter().filter(|m| m.up).count();
+        let total = s.monitors.len();
+        let label = if !s.reachable {
+            "⚠ Uptime Kuma — sin conexión".to_string()
         } else {
-            ("●", format!("{}/{} operativos", up, total))
+            format!("● Uptime Kuma — {}/{}", up, total)
         };
-        let sub_label = format!("{} Uptime Kuma — {}", icon, detail);
-
-        monitor_items = status.monitors.iter().enumerate().map(|(i, m)| {
+        uk_items = s.monitors.iter().enumerate().map(|(i, m)| {
             let dot = if m.up { "✓" } else { "✗" };
             MenuItem::with_id(app, format!("uk_mon_{}", i), format!("{} {}", dot, m.name), false, None::<&str>)
         }).collect::<Result<Vec<_>, _>>()?;
-
-        let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = monitor_items.iter()
-            .map(|i| i as &dyn IsMenuItem<tauri::Wry>)
-            .collect();
-        uk_sub = Some(Submenu::with_items(app, &sub_label, true, &refs)?);
+        let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = uk_items.iter().map(|i| i as &dyn IsMenuItem<_>).collect();
+        uk_sub = Some(Submenu::with_items(app, &label, true, &refs)?);
     } else {
-        monitor_items = vec![];
+        uk_items = vec![];
         uk_sub = None;
+    }
+
+    // ── Submenu Zabbix ───────────────────────────────────────────────────────
+    let zbx_status = app.state::<ZabbixState>().0.lock().unwrap().clone();
+    let zbx_sub: Option<Submenu<tauri::Wry>>;
+    let zbx_items: Vec<MenuItem<tauri::Wry>>;
+
+    if let Some(ref s) = zbx_status {
+        let n = s.problems.len();
+        let label = if !s.reachable {
+            "⚠ Zabbix — sin conexión".to_string()
+        } else if n == 0 {
+            "● Zabbix — todo OK".to_string()
+        } else {
+            format!("● Zabbix — {} problema(s)", n)
+        };
+        zbx_items = s.problems.iter().enumerate().map(|(i, p)| {
+            let sev = SEVERITY_LABELS.get(p.severity as usize).copied().unwrap_or("?");
+            MenuItem::with_id(app, format!("zbx_p_{}", i), format!("✗ [{}] {}", sev, p.name), false, None::<&str>)
+        }).collect::<Result<Vec<_>, _>>()?;
+        let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = zbx_items.iter().map(|i| i as &dyn IsMenuItem<_>).collect();
+        zbx_sub = Some(Submenu::with_items(app, &label, true, &refs)?);
+    } else {
+        zbx_items = vec![];
+        zbx_sub = None;
     }
 
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
         &show_item, &autostart_item, &notify_item, &update_item,
     ];
-    if let Some(ref sub) = uk_sub {
-        items.push(sub);
-    }
+    if let Some(ref sub) = uk_sub  { items.push(sub); }
+    if let Some(ref sub) = zbx_sub { items.push(sub); }
     items.push(&uk_cfg_item);
+    items.push(&zbx_cfg_item);
     items.push(&logs_item);
     items.push(&quit_item);
 
-    // monitor_items must stay alive until Menu::with_items is done
-    let _ = &monitor_items;
-
+    let _ = (&uk_items, &zbx_items);
     Menu::with_items(app, &items)
 }
 
 fn update_tray_menu(app: &AppHandle) {
     if let Ok(menu) = build_tray_menu(app) {
         let _ = app.state::<TrayIcon>().set_menu(Some(menu));
+    }
+}
+
+fn open_zabbix_config_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("zabbix-config") {
+        let _ = w.set_focus();
+        return;
+    }
+    let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size  = monitor.size();
+        let pos   = monitor.position();
+        let lw = size.width  as f64 / scale;
+        let lh = size.height as f64 / scale;
+        (pos.x as f64 / scale + (lw - 420.0) / 2.0,
+         pos.y as f64 / scale + (lh - 380.0) / 2.0)
+    } else { (100.0, 100.0) };
+    let result = WebviewWindowBuilder::new(app, "zabbix-config", WebviewUrl::App("zabbix.html".into()))
+        .title("Configurar Zabbix").inner_size(420.0, 380.0)
+        .position(x, y).resizable(false).build();
+    if let Err(e) = result {
+        log_message(app, LogLevel::Error, format!("Error al abrir config Zabbix: {e}"));
     }
 }
 
@@ -1722,8 +1930,27 @@ fn get_uptime_kuma_config(app: AppHandle) -> UptimeKumaConfigResponse {
 fn save_uptime_kuma_config(app: AppHandle, url: String, api_key: String) {
     save_uptime_kuma_config_to_disk(&app, &url, &api_key);
     log_message(&app, LogLevel::Info, format!("Uptime Kuma config actualizada: {}", url));
-    // Disparar poll inmediato
     if let Some(tx) = app.state::<UptimeKumaTrigger>().0.lock().unwrap().as_ref() {
+        let _ = tx.send(());
+    }
+}
+
+#[derive(serde::Serialize)]
+struct ZabbixConfigResponse { url: String, api_token: String, severities: Vec<u8> }
+
+#[tauri::command]
+fn get_zabbix_config(app: AppHandle) -> ZabbixConfigResponse {
+    match load_zabbix_config(&app) {
+        Some((url, token, sevs)) => ZabbixConfigResponse { url, api_token: token, severities: sevs },
+        None => ZabbixConfigResponse { url: String::new(), api_token: String::new(), severities: vec![4, 5] },
+    }
+}
+
+#[tauri::command]
+fn save_zabbix_config(app: AppHandle, url: String, api_token: String, severities: Vec<u8>) {
+    save_zabbix_config_to_disk(&app, &url, &api_token, &severities);
+    log_message(&app, LogLevel::Info, format!("Zabbix config actualizada: {}", url));
+    if let Some(tx) = app.state::<ZabbixTrigger>().0.lock().unwrap().as_ref() {
         let _ = tx.send(());
     }
 }
@@ -1890,7 +2117,9 @@ pub fn run() {
             open_logs,
             log_js,
             get_uptime_kuma_config,
-            save_uptime_kuma_config
+            save_uptime_kuma_config,
+            get_zabbix_config,
+            save_zabbix_config
         ])
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());
@@ -1898,6 +2127,8 @@ pub fn run() {
             app.manage(LogState(Arc::new(Mutex::new(Vec::new()))));
             app.manage(UptimeKumaState(Mutex::new(None)));
             app.manage(UptimeKumaTrigger(Mutex::new(None)));
+            app.manage(ZabbixState(Mutex::new(None)));
+            app.manage(ZabbixTrigger(Mutex::new(None)));
             log_message(app.handle(), LogLevel::Info, "WhataJOST iniciado");
 
             create_whatsapp_window(app.handle())?;
@@ -1920,6 +2151,7 @@ pub fn run() {
                 base_rgba: icon.rgba().to_vec(),
                 current_count: Mutex::new(0),
                 uk_dot: Mutex::new(UkDotState::NotConfigured),
+                zbx_dot: Mutex::new(ZbxDotState::NotConfigured),
             });
 
             let menu = build_tray_menu(app.handle())?;
@@ -1933,7 +2165,8 @@ pub fn run() {
                     "quit" => app.exit(0),
                     "show" => show_window(app),
                     "update" => check_for_updates(app),
-                    "uk_config" => open_uptime_kuma_config_window(app),
+                    "uk_config"  => open_uptime_kuma_config_window(app),
+                    "zbx_config" => open_zabbix_config_window(app),
                     "toggle_notify" => {
                         let state = app.state::<NotificationPopupState>();
                         let mut enabled = state.0.lock().unwrap();
@@ -2014,6 +2247,17 @@ pub fn run() {
                 loop {
                     do_uptime_kuma_poll(&uk_handle);
                     let _ = rx.recv_timeout(Duration::from_secs(30));
+                }
+            });
+
+            // Polling de Zabbix
+            let (ztx, zrx) = std::sync::mpsc::channel::<()>();
+            *app.state::<ZabbixTrigger>().0.lock().unwrap() = Some(ztx);
+            let zbx_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    do_zabbix_poll(&zbx_handle);
+                    let _ = zrx.recv_timeout(Duration::from_secs(30));
                 }
             });
 
