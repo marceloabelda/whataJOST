@@ -410,6 +410,14 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 });
             }
 
+            // Mantener WhatsApp activo aunque la ventana esté oculta.
+            // Sin esto, document.visibilityState pasa a "hidden" y WhatsApp
+            // pausa la recepción de mensajes y actualizaciones.
+            try {
+                Object.defineProperty(document, 'visibilityState', { get: () => 'visible', configurable: true });
+                Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
+            } catch(e) {}
+
             const isWhatsApp = (url) =>
                 /whatsapp\.(com|net)|facebook\.com|fbcdn\.net/.test(new URL(url).hostname);
 
@@ -748,30 +756,61 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
             }, true);
 
             // Interceptar drag & drop para pegar archivos en la conversación
+            var _dragLogged = false;
             document.addEventListener('dragover', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
+                if (!_dragLogged) {
+                    _dragLogged = true;
+                    window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                        level: 'info',
+                        message: 'dragover DOM alcanzado (primera vez)'
+                    });
+                }
             }, true);
 
             document.addEventListener('drop', function(e) {
                 e.preventDefault();
                 e.stopPropagation();
+                _dragLogged = false;
 
+                var dt = e.dataTransfer;
+                var filesLen = dt ? dt.files.length : -1;
+                var itemsLen = dt ? dt.items.length : -1;
+                var itemsDesc = '';
+                if (dt && dt.items) {
+                    for (var ii = 0; ii < dt.items.length; ii++) {
+                        itemsDesc += '[' + dt.items[ii].kind + '/' + dt.items[ii].type + ']';
+                    }
+                }
+                var types = dt ? Array.from(dt.types || []).join(',') : '';
                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                     level: 'info',
-                    message: 'DOM drop: files=' + (e.dataTransfer ? e.dataTransfer.files.length : 'N/A') +
-                             ' types=[' + Array.from(e.dataTransfer ? e.dataTransfer.types || [] : []).join(',') + ']' +
-                             ' uriList=' + (e.dataTransfer ? JSON.stringify(e.dataTransfer.getData('text/uri-list') || '') : 'N/A')
+                    message: 'DOM drop: files=' + filesLen + ' items=' + itemsLen + ' itemsDesc=' + itemsDesc + ' types=[' + types + ']'
                 });
 
-                if (!e.dataTransfer) return;
+                if (!dt) return;
 
-                // Path 1: WebKit expone los archivos directamente en dataTransfer.files
-                if (e.dataTransfer.files && e.dataTransfer.files.length > 0) {
-                    const dt = new DataTransfer();
-                    for (let i = 0; i < e.dataTransfer.files.length; i++) dt.items.add(e.dataTransfer.files[i]);
-                    dispatchPasteWithFiles(dt);
+                // Path 1: archivos directamente en dataTransfer.files
+                if (filesLen > 0) {
+                    const newDt = new DataTransfer();
+                    for (let i = 0; i < filesLen; i++) newDt.items.add(dt.files[i]);
+                    dispatchPasteWithFiles(newDt);
                     return;
+                }
+
+                // Path 1b: items con kind=file (algunos browsers exponen items pero no files)
+                if (itemsLen > 0) {
+                    const fileItems = [];
+                    for (let i = 0; i < itemsLen; i++) {
+                        if (dt.items[i].kind === 'file') fileItems.push(dt.items[i].getAsFile());
+                    }
+                    if (fileItems.length > 0 && fileItems[0]) {
+                        const newDt = new DataTransfer();
+                        fileItems.forEach(function(f) { if (f) newDt.items.add(f); });
+                        dispatchPasteWithFiles(newDt);
+                        return;
+                    }
                 }
 
                 // Path 2: En Linux/WebKit2GTK los archivos no están en dataTransfer.files.
