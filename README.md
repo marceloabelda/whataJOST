@@ -21,7 +21,7 @@ es un fork de https://github.com/jude7733/whatauri
 - [x] Descargar archivos (PDF, imagenes.. etc)
 - [x] Reinicio automático post-actualización
 - [x] Auto Startup
-- [ ] Atajo de teclado global (mostrar/ocultar ventana)
+- [x] Atajo de teclado global (mostrar/ocultar ventana) — Ctrl+Shift+W
 - [ ] Recordar tamaño y posición de ventana
 - [ ] Badge con mensajes sin leer en el tray
 - [ ] Múltiples cuentas
