@@ -341,11 +341,16 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         // native level and tries to navigate to a file:// URL instead of firing DOM
         // drop events. Read the file and inject it into the page ourselves.
         if scheme == "file" {
-            let path = url.path();
-            // GTK drag-data-received handler is the primary path for file drops.
-            // This fires only if WebKit tries to navigate to file:// (rare fallback).
-            log_message(&opener, LogLevel::Info, format!("on_navigation file:// (fallback): {}", path));
-            let data = match std::fs::read(path) {
+            // url.path() devuelve /C:/... en Windows — to_file_path() lo convierte correctamente.
+            let file_path = match url.to_file_path() {
+                Ok(p) => p,
+                Err(_) => {
+                    log_message(&opener, LogLevel::Error, format!("on_navigation file:// ruta inválida: {}", url));
+                    return false;
+                }
+            };
+            log_message(&opener, LogLevel::Info, format!("on_navigation file:// (fallback): {}", file_path.display()));
+            let data = match std::fs::read(&file_path) {
                 Ok(d) => d,
                 Err(e) => {
                     log_message(&opener, LogLevel::Error, format!("on_navigation file:// error leyendo: {e}"));
@@ -353,11 +358,11 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 }
             };
             let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-            let file_name = std::path::Path::new(path)
+            let file_name = file_path
                 .file_name()
                 .and_then(|n| n.to_str())
                 .unwrap_or("archivo");
-            let mime = mime_guess::from_path(path)
+            let mime = mime_guess::from_path(&file_path)
                 .first_or_octet_stream()
                 .to_string();
             let js = format!(
@@ -424,7 +429,13 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                     window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', { level: 'warn', message: 'dispatchPasteWithFiles: DataTransfer vacío, no se despacha' });
                     return;
                 }
-                var target = window.__waLastFocusedEditable || document.activeElement || document.body;
+                var stored = window.__waLastFocusedEditable;
+                var target = (stored && document.contains(stored))
+                    ? stored
+                    : (document.querySelector('div[contenteditable][data-tab]') ||
+                       document.querySelector('div[contenteditable="true"]') ||
+                       document.activeElement ||
+                       document.body);
                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                     level: 'info',
                     message: 'dispatchPasteWithFiles: ' + dt.files.length + ' archivo(s), target=' + (target.tagName || 'desconocido') + ' editable=' + (target.isContentEditable || false)
@@ -1255,6 +1266,9 @@ fn list_clipboard_types(tool: &str) -> String {
 
 #[tauri::command]
 fn read_file_for_drop(app: AppHandle, path: String) -> Option<FileDropResult> {
+    // En Windows, URL.pathname devuelve /C:/... — strip del / inicial.
+    #[cfg(target_os = "windows")]
+    let path = if path.starts_with('/') { path[1..].to_string() } else { path };
     match std::fs::read(&path) {
         Ok(data) => {
             let name = std::path::Path::new(&path)
