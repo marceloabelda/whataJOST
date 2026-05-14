@@ -846,29 +846,29 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
 
             // Watch document.title for unread message count
             (function() {
-                let lastCount = 0;
+                let lastCount = -1;
+                let titleObs = null;
                 function checkCount() {
                     const title = document.title;
-                    let count = 0;
-                    const m = title.match(/^\((\d+)\)\s/);
-                    if (m) { count = parseInt(m[1], 10) || 0; }
+                    const m = title.match(/^\((\d+)\)/);
+                    const count = m ? (parseInt(m[1], 10) || 0) : 0;
                     if (count !== lastCount) {
                         lastCount = count;
-                        try {
-                            window.__TAURI_INTERNALS__.invoke('update_unread_count', { count: count });
-                        } catch(e) {}
+                        try { window.__TAURI_INTERNALS__.invoke('update_unread_count', { count: count }); } catch(e) {}
                     }
                 }
-                if (document.readyState === 'loading') {
-                    document.addEventListener('DOMContentLoaded', checkCount, { once: true });
-                } else {
-                    checkCount();
+                function attachTitleObserver() {
+                    const titleEl = document.querySelector('title');
+                    if (titleEl && !titleObs) {
+                        titleObs = new MutationObserver(checkCount);
+                        titleObs.observe(titleEl, { childList: true, characterData: true, subtree: true });
+                        checkCount();
+                    }
                 }
-                const titleEl = document.querySelector('title');
-                if (titleEl) {
-                    const obs = new MutationObserver(checkCount);
-                    obs.observe(titleEl, { childList: true, characterData: true, subtree: true });
-                }
+                // Observe <head> for when WhatsApp inserts its <title>
+                const headObs = new MutationObserver(attachTitleObserver);
+                headObs.observe(document.documentElement, { childList: true, subtree: true });
+                attachTitleObserver();
                 setInterval(checkCount, 2500);
             })();
 
@@ -1335,20 +1335,74 @@ fn read_clipboard_image(_app: AppHandle) -> Option<ClipboardImage> {
     None
 }
 
+fn url_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 3);
+    for byte in s.bytes() {
+        match byte {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(byte as char),
+            b' ' => out.push('+'),
+            _ => {
+                out.push('%');
+                out.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
+                out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+            }
+        }
+    }
+    out
+}
+
 #[tauri::command]
 fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, title: String, body: String) {
     if !*state.0.lock().unwrap() {
         return;
     }
 
-    use tauri_plugin_notification::NotificationExt;
-    if let Err(e) = app.notification().builder().title(&title).body(&body).show() {
-        log_message(&app, LogLevel::Warn, format!("Error al mostrar notificación: {e}"));
+    if let Some(existing) = app.get_webview_window("notification") {
+        let _ = existing.close();
+    }
+
+    let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size = monitor.size();
+        let pos = monitor.position();
+        let logical_w = size.width as f64 / scale;
+        let logical_h = size.height as f64 / scale;
+        (
+            pos.x as f64 / scale + logical_w - 360.0 - 16.0,
+            pos.y as f64 / scale + logical_h - 100.0 - 16.0,
+        )
+    } else {
+        return;
+    };
+
+    let path = format!("notification.html?t={}&b={}", url_encode(&title), url_encode(&body));
+    let result = WebviewWindowBuilder::new(&app, "notification", WebviewUrl::App(path.into()))
+        .title("")
+        .decorations(false)
+        .transparent(true)
+        .always_on_top(true)
+        .skip_taskbar(true)
+        .resizable(false)
+        .inner_size(360.0, 100.0)
+        .position(x, y)
+        .focused(false)
+        .build();
+
+    if let Ok(win) = result {
+        let win_clone = win.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(Duration::from_millis(5500));
+            let _ = win_clone.close();
+        });
     }
 }
 
 #[tauri::command]
-fn close_notification(_app: AppHandle) {}
+fn close_notification(app: AppHandle) {
+    if let Some(win) = app.get_webview_window("notification") {
+        let _ = win.close();
+    }
+}
 
 #[tauri::command]
 fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, String> {
