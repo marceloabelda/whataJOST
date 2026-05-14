@@ -177,7 +177,35 @@ Cuando `update_unread_count` recibe `count > 0`, llama `generate_badged_icon`: c
 
 #### Config persistente
 
-`config.json` en `app.path().app_config_dir()` (Linux: `~/.config/whatajost/config.json`). Solo almacena `{"notifications_enabled": bool}`. Se lee al inicio (`load_notification_enabled`) y se escribe en cada toggle del menú (`save_notification_enabled`). No hay migración de schema — si la clave falta, el default es `true`.
+`config.json` en `app.path().app_config_dir()` (Linux: `~/.config/whatajost/config.json`). Campos:
+- `notifications_enabled` (bool, default `true`)
+- `uptime_kuma_url` (string, default vacío)
+- `uptime_kuma_api_key` (string, default vacío)
+
+Cada función de escritura (`save_notification_enabled`, `save_uptime_kuma_config_to_disk`) lee el JSON existente y hace merge para no pisar otros campos. No hay migración de schema.
+
+---
+
+#### Uptime Kuma (funciona ✓)
+
+Thread background (`do_uptime_kuma_poll`) corre en loop con `recv_timeout(30s)` — se puede triggear inmediatamente via `std::sync::mpsc::Sender<()>` (guardado en `UptimeKumaTrigger` state) cuando el usuario guarda la config.
+
+**Flujo de polling:**
+1. Lee `uptime_kuma_url` + `uptime_kuma_api_key` de config.json.
+2. Si no hay config → limpia estado, ícono sin punto.
+3. Si hay config → `GET <url>/metrics` con `Authorization: apikey <key>` via `ureq`.
+4. Parsea formato Prometheus: líneas `monitor_status{monitor_name="...", ...} 1|0`.
+5. Compara con estado previo (`UptimeKumaState`) → notifica si algún monitor cambia de UP↔DOWN.
+6. Actualiza `TrayBadgeState.uk_dot` (AllUp/SomeDown/Unreachable) y llama `regenerate_tray_icon`.
+7. Llama `update_tray_menu` para reconstruir el menú del tray.
+
+**Ícono del tray:** `regenerate_tray_icon` combina el punto UK (esquina inferior izquierda, radio 8) y el badge de mensajes (esquina superior derecha, radio 14). Los colores del punto: verde (AllUp), rojo (SomeDown), naranja (Unreachable), sin punto (NotConfigured).
+
+**Menú del tray — Submenu UK:** `build_tray_menu` construye el menú completo en cada update. Si hay estado UK, agrega un `Submenu` con `✓/✗ NombreMonitor` (items no clickeables) y un header con el total. Ítem "Configurar Uptime Kuma" siempre visible.
+
+**Ventana de config:** `public/uptime_kuma.html` — form con URL y API Key. Capability `uptime-kuma-window.json` para la ventana `uptime-kuma-config`. Comandos IPC: `get_uptime_kuma_config` (retorna `{url, api_key}`), `save_uptime_kuma_config` (guarda + trigerea poll).
+
+> **⚠ No tocar:** el `recv_timeout` en el polling loop (es el mecanismo de trigger inmediato al guardar config). `regenerate_tray_icon` siempre lee `uk_dot` + `current_count` frescos del state — no cachear esos valores.
 
 ---
 

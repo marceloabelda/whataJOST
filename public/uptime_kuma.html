@@ -1,0 +1,83 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8">
+  <title>Uptime Kuma — WhataJOST</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body {
+      font-family: system-ui, -apple-system, sans-serif;
+      background: #1e1e2e;
+      color: #cdd6f4;
+      padding: 22px 24px;
+      font-size: 14px;
+    }
+    h2 { font-size: 15px; font-weight: 600; margin-bottom: 18px; color: #89b4fa; letter-spacing: .3px; }
+    label { display: block; font-size: 11px; color: #a6adc8; margin-bottom: 4px; text-transform: uppercase; letter-spacing: .4px; }
+    input {
+      display: block; width: 100%;
+      padding: 8px 10px; margin-bottom: 14px;
+      background: #313244; border: 1px solid #45475a; border-radius: 6px;
+      color: #cdd6f4; font-size: 13px; outline: none;
+    }
+    input:focus { border-color: #89b4fa; }
+    .actions { display: flex; gap: 8px; margin-top: 2px; }
+    button {
+      padding: 8px 18px; border: none; border-radius: 6px;
+      cursor: pointer; font-size: 13px; font-weight: 600;
+    }
+    .btn-save { background: #89b4fa; color: #1e1e2e; }
+    .btn-save:hover { background: #74c7ec; }
+    .btn-clear { background: #313244; color: #a6adc8; }
+    .btn-clear:hover { background: #45475a; }
+    .note { margin-top: 14px; font-size: 11px; color: #6c7086; line-height: 1.6; }
+    #status { font-size: 12px; color: #a6e3a1; margin-top: 10px; min-height: 18px; }
+    #status.error { color: #f38ba8; }
+  </style>
+</head>
+<body>
+  <h2>Uptime Kuma</h2>
+  <label>URL de la instancia</label>
+  <input id="url" type="url" placeholder="https://status.tudominio.com">
+  <label>API Key</label>
+  <input id="key" type="password" placeholder="uk1_xxxxxxxxxxxxxxxxxxxx">
+  <div class="actions">
+    <button class="btn-save" onclick="save()">Guardar</button>
+    <button class="btn-clear" onclick="clear_()">Quitar</button>
+  </div>
+  <p class="note">
+    API Keys: Uptime Kuma → Configuración → API Keys (requiere v1.23+)<br>
+    La app va a consultar <code>/metrics</code> cada 30 segundos.
+  </p>
+  <div id="status"></div>
+  <script>
+    const ipc = window.__TAURI_INTERNALS__;
+    ipc.invoke('get_uptime_kuma_config').then(cfg => {
+      document.getElementById('url').value = cfg.url || '';
+      document.getElementById('key').value = cfg.api_key || '';
+    });
+    function setStatus(msg, error) {
+      const el = document.getElementById('status');
+      el.textContent = msg;
+      el.className = error ? 'error' : '';
+    }
+    function save() {
+      const url = document.getElementById('url').value.trim();
+      const key = document.getElementById('key').value.trim();
+      if (!url) { setStatus('Ingresá una URL válida.', true); return; }
+      if (!key) { setStatus('Ingresá una API Key.', true); return; }
+      ipc.invoke('save_uptime_kuma_config', { url, api_key: key })
+        .then(() => {
+          setStatus('Guardado. El estado se actualizará en segundos.');
+          setTimeout(() => window.close(), 1800);
+        })
+        .catch(e => setStatus('Error: ' + e, true));
+    }
+    function clear_() {
+      ipc.invoke('save_uptime_kuma_config', { url: '', api_key: '' })
+        .then(() => window.close())
+        .catch(e => setStatus('Error: ' + e, true));
+    }
+  </script>
+</body>
+</html>

@@ -29,6 +29,7 @@ es un fork de https://github.com/jude7733/whatauri
 - [ ] Modo no molestar
 - [x] Toggle notificaciones emergentes desde el menú del tray (persistido en disco)
 - [x] Click en tray icon, siempre trae la app a primer plano
+- [x] Integración con Uptime Kuma: polling de /metrics, estado en submenu del tray, punto de color en el ícono
 - [ ] Agregar el el tray, Minimize to tray
 
 

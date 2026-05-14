@@ -10,7 +10,7 @@ use webkit2gtk::{SettingsExt, WebContextExt, WebViewExt};
 
 use tauri::{
     image::Image,
-    menu::{CheckMenuItem, Menu, MenuEvent, MenuItem},
+    menu::{CheckMenuItem, IsMenuItem, Menu, MenuEvent, MenuItem, Submenu},
     tray::{MouseButton, MouseButtonState, TrayIcon, TrayIconBuilder, TrayIconEvent},
     AppHandle, DragDropEvent, Manager, State, WebviewEvent, WebviewUrl, WebviewWindowBuilder,
     WindowEvent,
@@ -50,6 +50,20 @@ struct FileDropResult {
 }
 
 struct LogState(Arc<Mutex<Vec<LogEntry>>>);
+
+// ── Uptime Kuma ──────────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, PartialEq)]
+enum UkDotState { NotConfigured, AllUp, SomeDown, Unreachable }
+
+#[derive(Debug, Clone)]
+struct UptimeKumaMonitor { name: String, up: bool }
+
+#[derive(Debug, Clone)]
+struct UptimeKumaStatus { monitors: Vec<UptimeKumaMonitor>, reachable: bool }
+
+struct UptimeKumaState(Mutex<Option<UptimeKumaStatus>>);
+struct UptimeKumaTrigger(Mutex<Option<std::sync::mpsc::Sender<()>>>);
 
 fn format_timestamp() -> String {
     let secs = SystemTime::now()
@@ -1119,6 +1133,7 @@ fn decode_file_uri(uri: &str) -> std::path::PathBuf {
 struct TrayBadgeState {
     base_rgba: Vec<u8>,
     current_count: Mutex<u32>,
+    uk_dot: Mutex<UkDotState>,
 }
 
 struct NotificationPopupState(Mutex<bool>);
@@ -1140,8 +1155,149 @@ fn load_notification_enabled(app: &AppHandle) -> bool {
 
 fn save_notification_enabled(app: &AppHandle, enabled: bool) {
     let path = config_path(app);
-    let json = serde_json::json!({"notifications_enabled": enabled});
+    let mut json: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    json["notifications_enabled"] = serde_json::Value::Bool(enabled);
     std::fs::write(&path, json.to_string()).ok();
+}
+
+fn load_uptime_kuma_config(app: &AppHandle) -> Option<(String, String)> {
+    let path = config_path(app);
+    let v: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())?;
+    let url = v.get("uptime_kuma_url")?.as_str()?;
+    let key = v.get("uptime_kuma_api_key")?.as_str()?;
+    if url.is_empty() || key.is_empty() { return None; }
+    Some((url.to_string(), key.to_string()))
+}
+
+fn save_uptime_kuma_config_to_disk(app: &AppHandle, url: &str, api_key: &str) {
+    let path = config_path(app);
+    let mut json: serde_json::Value = std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_else(|| serde_json::json!({}));
+    json["uptime_kuma_url"] = serde_json::Value::String(url.to_string());
+    json["uptime_kuma_api_key"] = serde_json::Value::String(api_key.to_string());
+    std::fs::write(&path, json.to_string()).ok();
+}
+
+fn extract_label<'a>(labels: &'a str, key: &str) -> Option<&'a str> {
+    let search = format!("{}=\"", key);
+    let start = labels.find(&search)? + search.len();
+    let end = labels[start..].find('"')? + start;
+    Some(&labels[start..end])
+}
+
+fn poll_uptime_kuma_metrics(url: &str, api_key: &str) -> Result<Vec<UptimeKumaMonitor>, String> {
+    let metrics_url = format!("{}/metrics", url.trim_end_matches('/'));
+    let agent = ureq::AgentBuilder::new()
+        .timeout_connect(std::time::Duration::from_secs(5))
+        .timeout(std::time::Duration::from_secs(10))
+        .build();
+    let resp = agent
+        .get(&metrics_url)
+        .set("Authorization", &format!("apikey {}", api_key))
+        .call()
+        .map_err(|e| e.to_string())?;
+    let text = resp.into_string().map_err(|e| e.to_string())?;
+    let mut monitors = Vec::new();
+    for line in text.lines() {
+        if !line.starts_with("monitor_status{") { continue; }
+        let brace_start = match line.find('{') { Some(i) => i, None => continue };
+        let brace_end  = match line.find('}') { Some(i) => i, None => continue };
+        let labels = &line[brace_start + 1..brace_end];
+        let name = match extract_label(labels, "monitor_name") {
+            Some(n) => n.to_string(),
+            None => continue,
+        };
+        let value_str = line[brace_end + 1..].trim().split_whitespace().next().unwrap_or("0");
+        let up = value_str == "1";
+        monitors.push(UptimeKumaMonitor { name, up });
+    }
+    Ok(monitors)
+}
+
+fn do_uptime_kuma_poll(app: &AppHandle) {
+    match load_uptime_kuma_config(app) {
+        Some((url, key)) => {
+            match poll_uptime_kuma_metrics(&url, &key) {
+                Ok(monitors) => {
+                    let prev = {
+                        let state = app.state::<UptimeKumaState>();
+                        let mut g = state.0.lock().unwrap();
+                        let prev = g.clone();
+                        *g = Some(UptimeKumaStatus { monitors: monitors.clone(), reachable: true });
+                        prev
+                    };
+                    // Notificar cambios de estado
+                    let notify_on = *app.state::<NotificationPopupState>().0.lock().unwrap();
+                    if notify_on {
+                        for m in &monitors {
+                            let was_up = prev.as_ref()
+                                .and_then(|s| s.monitors.iter().find(|p| p.name == m.name))
+                                .map(|p| p.up).unwrap_or(true);
+                            if !m.up && was_up {
+                                show_notification_internal(app, "⚠ Monitor caído", &m.name);
+                            }
+                        }
+                        if let Some(ref s) = prev {
+                            for pm in &s.monitors {
+                                if !pm.up {
+                                    let now_up = monitors.iter()
+                                        .find(|m| m.name == pm.name)
+                                        .map(|m| m.up).unwrap_or(false);
+                                    if now_up {
+                                        show_notification_internal(app, "✓ Monitor recuperado", &pm.name);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    let all_up = monitors.iter().all(|m| m.up);
+                    {
+                        let b = app.state::<TrayBadgeState>();
+                        *b.uk_dot.lock().unwrap() = if all_up { UkDotState::AllUp } else { UkDotState::SomeDown };
+                    }
+                    regenerate_tray_icon(app);
+                    update_tray_menu(app);
+                    log_message(app, LogLevel::Info, format!(
+                        "Uptime Kuma: {}/{} UP",
+                        monitors.iter().filter(|m| m.up).count(), monitors.len()
+                    ));
+                }
+                Err(e) => {
+                    {
+                        let state = app.state::<UptimeKumaState>();
+                        let mut g = state.0.lock().unwrap();
+                        match *g {
+                            Some(ref mut s) => s.reachable = false,
+                            None => *g = Some(UptimeKumaStatus { monitors: vec![], reachable: false }),
+                        }
+                    }
+                    {
+                        let b = app.state::<TrayBadgeState>();
+                        *b.uk_dot.lock().unwrap() = UkDotState::Unreachable;
+                    }
+                    regenerate_tray_icon(app);
+                    update_tray_menu(app);
+                    log_message(app, LogLevel::Warn, format!("Uptime Kuma: sin conexión: {}", e));
+                }
+            }
+        }
+        None => {
+            let prev_dot = app.state::<TrayBadgeState>().uk_dot.lock().unwrap().clone();
+            if prev_dot != UkDotState::NotConfigured {
+                *app.state::<UptimeKumaState>().0.lock().unwrap() = None;
+                *app.state::<TrayBadgeState>().uk_dot.lock().unwrap() = UkDotState::NotConfigured;
+                regenerate_tray_icon(app);
+                update_tray_menu(app);
+            }
+        }
+    }
 }
 
 // --- tray badge rendering ---
@@ -1254,12 +1410,120 @@ fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, count: u32) {
     }
 }
 
-fn generate_badged_icon(base_rgba: &[u8], count: u32) -> Option<Vec<u8>> {
-    if count == 0 { return None; }
-    let mut rgba = base_rgba.to_vec();
-    draw_filled_circle(&mut rgba, 64, 64, 48.0, 16.0, 14.0, 255, 59, 48);
-    draw_count_text(&mut rgba, 64, 48.0, 16.0, count);
-    Some(rgba)
+fn regenerate_tray_icon(app: &AppHandle) {
+    let badge = app.state::<TrayBadgeState>();
+    let count = *badge.current_count.lock().unwrap();
+    let uk_dot = badge.uk_dot.lock().unwrap().clone();
+    let mut rgba = badge.base_rgba.clone();
+    // Punto de estado UK en esquina inferior izquierda (no interfiere con el badge de mensajes)
+    match uk_dot {
+        UkDotState::AllUp =>
+            draw_filled_circle(&mut rgba, 64, 64, 10.0, 54.0, 8.0, 50, 205, 50),
+        UkDotState::SomeDown =>
+            draw_filled_circle(&mut rgba, 64, 64, 10.0, 54.0, 8.0, 255, 59, 48),
+        UkDotState::Unreachable =>
+            draw_filled_circle(&mut rgba, 64, 64, 10.0, 54.0, 8.0, 200, 140, 20),
+        UkDotState::NotConfigured => {}
+    }
+    // Badge de mensajes no leídos en esquina superior derecha
+    if count > 0 {
+        draw_filled_circle(&mut rgba, 64, 64, 48.0, 16.0, 14.0, 255, 59, 48);
+        draw_count_text(&mut rgba, 64, 48.0, 16.0, count);
+    }
+    let tray = app.state::<TrayIcon>();
+    let _ = tray.set_icon(Some(Image::new_owned(rgba, 64, 64)));
+}
+
+fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
+    let autostart_enabled = app.autolaunch().is_enabled().unwrap_or(false);
+    let notifications_enabled = *app.state::<NotificationPopupState>().0.lock().unwrap();
+
+    let show_item     = MenuItem::with_id(app, "show", "Abrir WhatsApp", true, None::<&str>)?;
+    let autostart_item = CheckMenuItem::with_id(app, "autostart", "Iniciar con el sistema", true, autostart_enabled, None::<&str>)?;
+    let notify_item   = CheckMenuItem::with_id(app, "toggle_notify", "Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
+    let update_item   = MenuItem::with_id(app, "update", "Buscar actualización", true, None::<&str>)?;
+    let uk_cfg_item   = MenuItem::with_id(app, "uk_config", "Configurar Uptime Kuma", true, None::<&str>)?;
+    let logs_item     = MenuItem::with_id(app, "logs", "Ver logs", true, None::<&str>)?;
+    let quit_item     = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
+
+    let uk_status = app.state::<UptimeKumaState>().0.lock().unwrap().clone();
+
+    let uk_sub: Option<Submenu<tauri::Wry>>;
+    let monitor_items: Vec<MenuItem<tauri::Wry>>;
+
+    if let Some(ref status) = uk_status {
+        let up = status.monitors.iter().filter(|m| m.up).count();
+        let total = status.monitors.len();
+        let (icon, detail) = if !status.reachable {
+            ("⚠", "sin conexión".to_string())
+        } else if up == total && total > 0 {
+            ("●", format!("{}/{} operativos", up, total))
+        } else {
+            ("●", format!("{}/{} operativos", up, total))
+        };
+        let sub_label = format!("{} Uptime Kuma — {}", icon, detail);
+
+        monitor_items = status.monitors.iter().enumerate().map(|(i, m)| {
+            let dot = if m.up { "✓" } else { "✗" };
+            MenuItem::with_id(app, format!("uk_mon_{}", i), format!("{} {}", dot, m.name), false, None::<&str>)
+        }).collect::<Result<Vec<_>, _>>()?;
+
+        let refs: Vec<&dyn IsMenuItem<tauri::Wry>> = monitor_items.iter()
+            .map(|i| i as &dyn IsMenuItem<tauri::Wry>)
+            .collect();
+        uk_sub = Some(Submenu::with_items(app, &sub_label, true, &refs)?);
+    } else {
+        monitor_items = vec![];
+        uk_sub = None;
+    }
+
+    let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
+        &show_item, &autostart_item, &notify_item, &update_item,
+    ];
+    if let Some(ref sub) = uk_sub {
+        items.push(sub);
+    }
+    items.push(&uk_cfg_item);
+    items.push(&logs_item);
+    items.push(&quit_item);
+
+    // monitor_items must stay alive until Menu::with_items is done
+    let _ = &monitor_items;
+
+    Menu::with_items(app, &items)
+}
+
+fn update_tray_menu(app: &AppHandle) {
+    if let Ok(menu) = build_tray_menu(app) {
+        let _ = app.state::<TrayIcon>().set_menu(Some(menu));
+    }
+}
+
+fn open_uptime_kuma_config_window(app: &AppHandle) {
+    if let Some(w) = app.get_webview_window("uptime-kuma-config") {
+        let _ = w.set_focus();
+        return;
+    }
+    let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+        let scale = monitor.scale_factor();
+        let size  = monitor.size();
+        let pos   = monitor.position();
+        let lw = size.width  as f64 / scale;
+        let lh = size.height as f64 / scale;
+        (pos.x as f64 / scale + (lw - 420.0) / 2.0,
+         pos.y as f64 / scale + (lh - 300.0) / 2.0)
+    } else {
+        (100.0, 100.0)
+    };
+    let result = WebviewWindowBuilder::new(app, "uptime-kuma-config", WebviewUrl::App("uptime_kuma.html".into()))
+        .title("Configurar Uptime Kuma")
+        .inner_size(420.0, 300.0)
+        .position(x, y)
+        .resizable(false)
+        .build();
+    if let Err(e) = result {
+        log_message(app, LogLevel::Error, format!("Error al abrir config UK: {e}"));
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -1390,43 +1654,26 @@ fn url_encode(s: &str) -> String {
     out
 }
 
-#[tauri::command]
-fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, title: String, body: String) {
-    if !*state.0.lock().unwrap() {
-        return;
-    }
-
+fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
     if let Some(existing) = app.get_webview_window("notification") {
         let _ = existing.close();
     }
-
     let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
         let scale = monitor.scale_factor();
-        let size = monitor.size();
-        let pos = monitor.position();
-        let logical_w = size.width as f64 / scale;
-        let logical_h = size.height as f64 / scale;
+        let size  = monitor.size();
+        let pos   = monitor.position();
         (
-            pos.x as f64 / scale + logical_w - 360.0 - 16.0,
-            pos.y as f64 / scale + logical_h - 100.0 - 16.0,
+            pos.x as f64 / scale + size.width  as f64 / scale - 360.0 - 16.0,
+            pos.y as f64 / scale + size.height as f64 / scale - 100.0 - 16.0,
         )
     } else {
         return;
     };
-
-    let path = format!("notification.html?t={}&b={}", url_encode(&title), url_encode(&body));
-    let result = WebviewWindowBuilder::new(&app, "notification", WebviewUrl::App(path.into()))
-        .title("")
-        .decorations(false)
-        .transparent(true)
-        .always_on_top(true)
-        .skip_taskbar(true)
-        .resizable(false)
-        .inner_size(360.0, 100.0)
-        .position(x, y)
-        .focused(false)
-        .build();
-
+    let path = format!("notification.html?t={}&b={}", url_encode(title), url_encode(body));
+    let result = WebviewWindowBuilder::new(app, "notification", WebviewUrl::App(path.into()))
+        .title("").decorations(false).transparent(true).always_on_top(true)
+        .skip_taskbar(true).resizable(false).inner_size(360.0, 100.0)
+        .position(x, y).focused(false).build();
     if let Ok(win) = result {
         let win_clone = win.clone();
         std::thread::spawn(move || {
@@ -1437,9 +1684,36 @@ fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, t
 }
 
 #[tauri::command]
+fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, title: String, body: String) {
+    if !*state.0.lock().unwrap() { return; }
+    show_notification_internal(&app, &title, &body);
+}
+
+#[tauri::command]
 fn close_notification(app: AppHandle) {
     if let Some(win) = app.get_webview_window("notification") {
         let _ = win.close();
+    }
+}
+
+#[derive(serde::Serialize)]
+struct UptimeKumaConfigResponse { url: String, api_key: String }
+
+#[tauri::command]
+fn get_uptime_kuma_config(app: AppHandle) -> UptimeKumaConfigResponse {
+    match load_uptime_kuma_config(&app) {
+        Some((url, api_key)) => UptimeKumaConfigResponse { url, api_key },
+        None => UptimeKumaConfigResponse { url: String::new(), api_key: String::new() },
+    }
+}
+
+#[tauri::command]
+fn save_uptime_kuma_config(app: AppHandle, url: String, api_key: String) {
+    save_uptime_kuma_config_to_disk(&app, &url, &api_key);
+    log_message(&app, LogLevel::Info, format!("Uptime Kuma config actualizada: {}", url));
+    // Disparar poll inmediato
+    if let Some(tx) = app.state::<UptimeKumaTrigger>().0.lock().unwrap().as_ref() {
+        let _ = tx.send(());
     }
 }
 
@@ -1504,18 +1778,7 @@ fn update_unread_count(app: AppHandle, badge_state: State<'_, TrayBadgeState>, c
         if *current == count { return; }
         *current = count;
     }
-    let tray = app.state::<TrayIcon>();
-    let icon = if count == 0 {
-        Some(Image::new_owned(
-            badge_state.base_rgba.clone(),
-            64, 64))
-    } else {
-        generate_badged_icon(&badge_state.base_rgba, count)
-            .map(|rgba| Image::new_owned(rgba, 64, 64))
-    };
-    if let Err(e) = tray.set_icon(icon) {
-        log_message(&app, LogLevel::Error, format!("Error al actualizar icono del tray: {e}"));
-    }
+    regenerate_tray_icon(&app);
 }
 
 #[tauri::command]
@@ -1614,12 +1877,16 @@ pub fn run() {
             get_logs,
             clear_logs,
             open_logs,
-            log_js
+            log_js,
+            get_uptime_kuma_config,
+            save_uptime_kuma_config
         ])
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());
             app.manage(NotificationPopupState(Mutex::new(notifications_enabled)));
             app.manage(LogState(Arc::new(Mutex::new(Vec::new()))));
+            app.manage(UptimeKumaState(Mutex::new(None)));
+            app.manage(UptimeKumaTrigger(Mutex::new(None)));
             log_message(app.handle(), LogLevel::Info, "WhataJOST iniciado");
 
             create_whatsapp_window(app.handle())?;
@@ -1631,45 +1898,20 @@ pub fn run() {
             if let Some(url) = launch_url {
                 let handle = app.handle().clone();
                 std::thread::spawn(move || {
-                    // Esperar a que WhatsApp Web cargue antes de navegar
                     std::thread::sleep(Duration::from_secs(5));
                     handle_deep_link(&handle, &url);
                 });
             }
-
-            let autostart_enabled = app
-                .autolaunch()
-                .is_enabled()
-                .unwrap_or(false);
-
-            let show_item =
-                MenuItem::with_id(app, "show", "Abrir WhatsApp", true, None::<&str>)?;
-            let autostart_item = CheckMenuItem::with_id(
-                app,
-                "autostart",
-                "Iniciar con el sistema",
-                true,
-                autostart_enabled,
-                None::<&str>,
-            )?;
-            let notify_item =
-                CheckMenuItem::with_id(app, "toggle_notify", "Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
-            let update_item =
-                MenuItem::with_id(app, "update", "Buscar actualización", true, None::<&str>)?;
-            let logs_item =
-                MenuItem::with_id(app, "logs", "Ver logs", true, None::<&str>)?;
-            let quit_item = MenuItem::with_id(app, "quit", "Salir", true, None::<&str>)?;
-            let menu = Menu::with_items(
-                app,
-                &[&show_item, &autostart_item, &notify_item, &update_item, &logs_item, &quit_item],
-            )?;
 
             let icon = Image::from_bytes(include_bytes!("../../public/tray.png"))?;
 
             app.manage(TrayBadgeState {
                 base_rgba: icon.rgba().to_vec(),
                 current_count: Mutex::new(0),
+                uk_dot: Mutex::new(UkDotState::NotConfigured),
             });
+
+            let menu = build_tray_menu(app.handle())?;
 
             let tray = TrayIconBuilder::new()
                 .icon(icon)
@@ -1680,6 +1922,7 @@ pub fn run() {
                     "quit" => app.exit(0),
                     "show" => show_window(app),
                     "update" => check_for_updates(app),
+                    "uk_config" => open_uptime_kuma_config_window(app),
                     "toggle_notify" => {
                         let state = app.state::<NotificationPopupState>();
                         let mut enabled = state.0.lock().unwrap();
@@ -1751,6 +1994,17 @@ pub fn run() {
                 .build(app)?;
 
             app.manage(tray);
+
+            // Polling de Uptime Kuma
+            let (tx, rx) = std::sync::mpsc::channel::<()>();
+            *app.state::<UptimeKumaTrigger>().0.lock().unwrap() = Some(tx);
+            let uk_handle = app.handle().clone();
+            std::thread::spawn(move || {
+                loop {
+                    do_uptime_kuma_poll(&uk_handle);
+                    let _ = rx.recv_timeout(Duration::from_secs(30));
+                }
+            });
 
             // Check for updates in background after app starts
             let handle = app.handle().clone();

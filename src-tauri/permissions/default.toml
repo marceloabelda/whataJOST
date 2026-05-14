@@ -17,4 +17,6 @@ commands.allow = [
   "get_logs",
   "clear_logs",
   "open_logs",
+  "get_uptime_kuma_config",
+  "save_uptime_kuma_config",
 ]
