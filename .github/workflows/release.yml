@@ -1,6 +1,6 @@
 name: Release
 
-# Se dispara cuando se pushea un tag v* (ej: v1.1.54)
+# Se dispara cuando se pushea un tag v* (ej: v1.1.56)
 on:
   push:
     tags:
@@ -18,6 +18,10 @@ jobs:
             name: windows
 
     runs-on: ${{ matrix.os }}
+
+    permissions:
+      id-token: write   # requerido por SignPath para OIDC
+      actions: read     # requerido por SignPath para descargar artifacts
 
     steps:
       - uses: actions/checkout@v4
@@ -55,6 +59,50 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
 
+      # ── Solo Windows: firmar el MSI con SignPath ──────────────────────────
+      # Si SIGNPATH_API_TOKEN no está configurado, el paso falla con
+      # continue-on-error y el release sigue con el MSI sin firmar.
+
+      - name: Subir MSI sin firmar (entrada para SignPath)
+        id: upload-unsigned
+        if: matrix.name == 'windows'
+        uses: actions/upload-artifact@v4
+        with:
+          name: msi-unsigned
+          path: src-tauri/target/release/bundle/msi/*.msi
+          if-no-files-found: ignore
+
+      - name: Firmar MSI con SignPath (Authenticode)
+        id: sign
+        if: matrix.name == 'windows'
+        uses: SignPath/github-action-submit-signing-request@v1.1
+        with:
+          api-token: '${{ secrets.SIGNPATH_API_TOKEN }}'
+          organization-id: '${{ secrets.SIGNPATH_ORGANIZATION_ID }}'
+          project-slug: 'whatajost'
+          signing-policy-slug: 'release-signing'
+          github-artifact-id: '${{ steps.upload-unsigned.outputs.artifact-id }}'
+          wait-for-completion: true
+          output-artifact-directory: signed-msi
+        continue-on-error: true
+
+      # Reemplazar el MSI sin firmar por el firmado y re-generar el .msi.sig
+      # que usa el auto-updater de Tauri (la firma Authenticode modifica los
+      # bytes del MSI, invalidando el .sig original).
+      - name: Reemplazar MSI y re-generar firma del updater
+        if: matrix.name == 'windows' && steps.sign.outcome == 'success'
+        shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ''
+        run: |
+          msi=$(ls src-tauri/target/release/bundle/msi/*.msi | head -1)
+          signed=$(ls signed-msi/*.msi | head -1)
+          cp "$signed" "$msi"
+          rm -f "${msi}.sig"
+          pnpm exec tauri signer sign "$msi"
+
+      # ── Subir artefactos finales (ambas plataformas) ──────────────────────
       - name: Subir artefactos
         uses: actions/upload-artifact@v4
         with:
