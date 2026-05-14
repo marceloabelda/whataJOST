@@ -59,24 +59,6 @@ pnpm install
 pnpm tauri dev
 ```
 
-## Actualización automática
-
-La app chequea actualizaciones automáticamente al iniciar (en silencio, solo notifica si hay una nueva versión). También podés buscar manualmente desde el ícono del systray → **Buscar actualización**.
-
-Para publicar una nueva versión:
-
-```bash
-./release.sh 1.2.0
-```
-
-El script buildena, firma los paquetes, genera el manifiesto y crea el release en GitHub.
-
-## Changelog
-
-### v1.1.24
-- Toggle de notificaciones emergentes en el menú del tray ("Notificaciones emergentes" checkeable).
-- La preferencia se persiste en `~/.config/com.whatajost.app/config.json` entre reinicios.
-
 ## Icon
 
 <a target="_blank" href="https://icons8.com/icon/42961/whatsapp">WhatsApp</a>
