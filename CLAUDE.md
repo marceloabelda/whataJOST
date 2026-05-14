@@ -164,12 +164,24 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 | Abrir WhatsApp | MenuItem | `show_window` |
 | Iniciar con el sistema | CheckMenuItem | `tauri_plugin_autostart` enable/disable |
 | Notificaciones emergentes | CheckMenuItem | toggle `NotificationPopupState`, persiste en `config.json` |
+| Barra flotante | CheckMenuItem | toggle `FloatingBarState`, crea/cierra ventana `floating-bar`, persiste en `config.json` |
 | Buscar actualización | MenuItem | `check_for_updates(app)` |
+| [Submenu Uptime Kuma] | Submenu | visible si hay estado UK; `✓/✗ nombre` por monitor (no clickeables) |
+| [Submenu Zabbix] | Submenu | visible si hay estado Zabbix; `✗ [Severidad] nombre` por problema (no clickeables) |
+| Configurar Uptime Kuma | MenuItem | abre/enfoca ventana `uptime-kuma-config` |
+| Configurar Zabbix | MenuItem | abre/enfoca ventana `zabbix-config` |
 | Ver logs | MenuItem | abre/enfoca ventana `logs` |
 | Salir | MenuItem | `app.exit(0)` |
 
-**Badge de no leídos (Rust, lib.rs:1226):**
-Cuando `update_unread_count` recibe `count > 0`, llama `generate_badged_icon`: copia el RGBA base del ícono, dibuja un círculo rojo (radio 14, centro 48,16) con `draw_filled_circle` (anti-aliasing manual via `blend_pixel`), superpone el número con `draw_count_text` usando `DIGIT_PATTERNS` (pixel art 5×7 a escala 2). Muestra `9+` para counts > 9. No usa librerías de imágenes — todo pixel art en RGBA puro.
+El menú se reconstruye completamente en cada `update_tray_menu()` → `build_tray_menu()`. Los submenus UK y Zabbix son dinámicos (reflejan el estado en tiempo real) y solo aparecen si hay al menos un resultado conocido. `build_tray_menu` lee `UptimeKumaState` y `ZabbixState` directamente.
+
+**Badge de no leídos + puntos de monitoreo (Rust):**
+`regenerate_tray_icon` combina tres capas sobre el RGBA base (64×64 px):
+1. **Fila inferior (UK):** punto verde (AllUp), puntos rojos ×N (Down(N)), punto naranja (Unreachable), nada (NotConfigured). Radio 5.5 px, separados 13 px, anclados a `y = 64 - 6.5`.
+2. **Fila sobre UK (Zabbix):** misma lógica con `ZbxDotState`. `y = UK_Y - 13`.
+3. **Badge superior derecho:** círculo rojo (radio 14, centro 48,16) con número pixel art (5×7, escala 2). Solo cuando `count > 0`. Muestra `9+` para counts > 9.
+
+`draw_filled_circle` usa anti-aliasing manual via `blend_pixel`. Ningún crate de imágenes.
 
 > **⚠ No tocar:** `TrayBadgeState.base_rgba` se captura una sola vez al inicio desde el PNG embebido; si se pierde, el badge no puede regenerarse. `FONT_SCALE = 2` calibra los dígitos para el ícono de 64×64.
 
@@ -179,10 +191,14 @@ Cuando `update_unread_count` recibe `count > 0`, llama `generate_badged_icon`: c
 
 `config.json` en `app.path().app_config_dir()` (Linux: `~/.config/whatajost/config.json`). Campos:
 - `notifications_enabled` (bool, default `true`)
+- `floating_bar_visible` (bool, default `false`)
 - `uptime_kuma_url` (string, default vacío)
 - `uptime_kuma_api_key` (string, default vacío)
+- `zabbix_url` (string, default vacío)
+- `zabbix_api_token` (string, default vacío)
+- `zabbix_severities` (array de u8, default `[4, 5]` = Alto + Desastre)
 
-Cada función de escritura (`save_notification_enabled`, `save_uptime_kuma_config_to_disk`) lee el JSON existente y hace merge para no pisar otros campos. No hay migración de schema.
+Todas las escrituras usan `modify_config(app, |json| { ... })`: lee el JSON existente, aplica el closure, y escribe. Garantiza merge sin pisar otros campos y loggea errores de escritura. No hay migración de schema.
 
 ---
 
@@ -203,9 +219,47 @@ Thread background (`do_uptime_kuma_poll`) corre en loop con `recv_timeout(30s)` 
 
 **Menú del tray — Submenu UK:** `build_tray_menu` construye el menú completo en cada update. Si hay estado UK, agrega un `Submenu` con `✓/✗ NombreMonitor` (items no clickeables) y un header con el total. Ítem "Configurar Uptime Kuma" siempre visible.
 
-**Ventana de config:** `public/uptime_kuma.html` — form con URL y API Key. Capability `uptime-kuma-window.json` para la ventana `uptime-kuma-config`. Comandos IPC: `get_uptime_kuma_config` (retorna `{url, api_key}`), `save_uptime_kuma_config` (guarda + trigerea poll).
+**Ventana de config:** `public/uptime_kuma.html` — form con URL y API Key. Capability `uptime-kuma-window.json` para la ventana `uptime-kuma-config`. Comandos IPC: `get_uptime_kuma_config` (retorna `{url, api_key}`), `save_uptime_kuma_config` (guarda + trigerea poll inmediato).
 
 > **⚠ No tocar:** el `recv_timeout` en el polling loop (es el mecanismo de trigger inmediato al guardar config). `regenerate_tray_icon` siempre lee `uk_dot` + `current_count` frescos del state — no cachear esos valores.
+
+---
+
+#### Zabbix (funciona ✓)
+
+Thread background (`do_zabbix_poll`) idéntico al de UK: loop con `recv_timeout(30s)` + `ZabbixTrigger` para trigger inmediato.
+
+**Flujo de polling:**
+1. Lee `zabbix_url` + `zabbix_api_token` + `zabbix_severities` de config.json.
+2. Si no hay config → limpia estado, ícono sin punto Zabbix.
+3. Si hay config → `POST <url>/api_jsonrpc.php` con body JSON-RPC `problem.get` filtrado por severidades.
+4. El token se pasa doble: `Authorization: Bearer <token>` header (Zabbix 6+) y `"auth": token` en el body (Zabbix 5.4 compat).
+5. Parsea array `result` → `Vec<ZabbixProblem>` (name + severity u8).
+6. Notifica problemas nuevos y resueltos (comparando con estado previo).
+7. Actualiza `TrayBadgeState.zbx_dot` (Ok/Problems(n)/Unreachable) y reconstruye ícono y menú.
+
+**Severidades:** `SEVERITY_LABELS = ["No clasificado", "Información", "Advertencia", "Promedio", "Alto", "Desastre"]` (índice 0–5). El usuario elige cuáles recibir; los valores se almacenan como `Vec<u8>`.
+
+**Ventana de config:** `public/zabbix.html` — form con URL + API Token + chips de severidad (coloreados por nivel, default Alto+Desastre). Capability `zabbix-window.json` para la ventana `zabbix-config`. Comandos IPC: `get_zabbix_config` (retorna `{url, api_token, severities}`), `save_zabbix_config` (guarda + trigerea poll).
+
+> **⚠ No tocar:** el doble envío del token (header + body) — Zabbix cambió la auth entre versiones y el doble modo cubre el rango 5.4–7.0.
+
+---
+
+#### Barra flotante de monitoreo (funciona ✓)
+
+Ventana `floating-bar` (420×44 px) siempre visible, sin decoraciones, transparente, `skip_taskbar`. Muestra estado de UK y Zabbix en tiempo real. Se activa/desactiva desde el tray → "Barra flotante".
+
+**Comportamiento:**
+- Al activar: `create_floating_bar_window` crea la ventana centrada horizontalmente, 10 px desde el tope del monitor primario.
+- Al desactivar desde tray: `win.close()` + `FloatingBarState → false` + guarda config.
+- Si el WM la cierra (Alt+F4, etc.): `on_window_event(CloseRequested)` sincroniza `FloatingBarState → false`, guarda config, reconstruye menú del tray.
+
+**`get_monitoring_status` IPC:** devuelve `MonitoringBarStatus` con `uk_configured`, `uk_reachable`, `uk_monitors` (Vec de `{name, up}`), y los análogos de Zabbix. La barra llama este comando cada 5 s y renderiza el resultado.
+
+**`public/floating_bar.html`:** pill semitransparente (glassmorphism). Sección UK | divider | Sección Zabbix. Puntos coloreados (verde=ok, rojo=caído/problema, amarillo=promedio Zabbix, gris=offline), texto de estado compacto, tooltip por punto con el nombre del monitor/problema. Toda la barra es `data-tauri-drag-region`.
+
+> **⚠ No tocar:** el `on_window_event(CloseRequested)` en `create_floating_bar_window` — sin él, cerrar la ventana por el WM deja `FloatingBarState = true` (tray checkbox marcado) pero la ventana ya no existe.
 
 ---
 
@@ -246,6 +300,11 @@ Flujo:
 | `get_logs` | Devuelve todos los logs del buffer (usada por `logs.html`) |
 | `clear_logs` | Vacía el buffer de logs |
 | `open_logs` | Abre la ventana del visor de logs centrada en pantalla |
+| `get_uptime_kuma_config` | Devuelve `{url, api_key}` de config.json |
+| `save_uptime_kuma_config(url, api_key)` | Guarda config UK y trigerea poll inmediato |
+| `get_zabbix_config` | Devuelve `{url, api_token, severities}` de config.json |
+| `save_zabbix_config(url, api_token, severities)` | Guarda config Zabbix y trigerea poll inmediato |
+| `get_monitoring_status` | Devuelve estado combinado UK + Zabbix (`MonitoringBarStatus`); usado por la barra flotante cada 5 s |
 
 ### Capabilities (IPC por ventana)
 
@@ -255,15 +314,21 @@ Flujo:
 | `whatsapp-notification.json` | `whatsapp-web` (remota: `*.whatsapp.com`, `*.whatsapp.net`) | `core:default`, `clipboard-manager:allow-read-image`, `allow-whatsapp-ipc` |
 | `logs-window.json` | `logs` | `core:default`, `allow-whatsapp-ipc` |
 | `notification-window.json` | `notification` | `core:default`, `allow-whatsapp-ipc` |
+| `uptime-kuma-window.json` | `uptime-kuma-config` | `core:default`, `allow-whatsapp-ipc` |
+| `zabbix-window.json` | `zabbix-config` | `core:default`, `allow-whatsapp-ipc` |
+| `floating-bar-window.json` | `floating-bar` | `core:default`, `allow-whatsapp-ipc` |
 
 La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la URL coincide con los patrones de `remote.urls`.
 
-**Importante — ACL de Tauri 2.11.1+**: Desde Tauri 2.11.1, todos los comandos custom de la app (no solo plugins) requieren permiso ACL explícito cuando son invocados desde webviews remotos. El archivo `src-tauri/permissions/default.toml` define el permiso `allow-whatsapp-ipc` que lista los 11 comandos IPC de la app. Sin ese archivo (o sin incluir `allow-whatsapp-ipc` en el capability de la ventana remota), los comandos fallan silenciosamente — no aparece ningún error en la consola JS ni en los logs de Rust.
+**Importante — ACL de Tauri 2.11.1+**: Desde Tauri 2.11.1, todos los comandos custom de la app (no solo plugins) requieren permiso ACL explícito cuando son invocados desde webviews remotos. El archivo `src-tauri/permissions/default.toml` define el permiso `allow-whatsapp-ipc` que lista todos los comandos IPC de la app. Sin ese archivo (o sin incluir `allow-whatsapp-ipc` en el capability de la ventana remota), los comandos fallan silenciosamente — no aparece ningún error en la consola JS ni en los logs de Rust.
 
 ### Ventanas HTML (`public/`)
 
 - `logs.html` — Visor de logs en tiempo real (polling 2 s a `get_logs`); muestra error explícito si IPC no está disponible
-- `notification.html` — Toast de notificación transparente (se auto-cierra)
+- `notification.html` — Toast de notificación transparente (se auto-cierra a los 5,5 s)
+- `uptime_kuma.html` — Configuración de Uptime Kuma (URL + API Key)
+- `zabbix.html` — Configuración de Zabbix (URL + API Token + chips de severidad)
+- `floating_bar.html` — Barra flotante de monitoreo (pill semitransparente, polling 5 s a `get_monitoring_status`)
 - `index.html` — Página mínima para la ventana `main` (oculta)
 
 ## Key dependencies

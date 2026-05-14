@@ -1173,14 +1173,22 @@ fn load_notification_enabled(app: &AppHandle) -> bool {
         .unwrap_or(true)
 }
 
-fn save_notification_enabled(app: &AppHandle, enabled: bool) {
+fn modify_config(app: &AppHandle, f: impl FnOnce(&mut serde_json::Value)) {
     let path = config_path(app);
     let mut json: serde_json::Value = std::fs::read_to_string(&path)
         .ok()
         .and_then(|s| serde_json::from_str(&s).ok())
         .unwrap_or_else(|| serde_json::json!({}));
-    json["notifications_enabled"] = serde_json::Value::Bool(enabled);
-    std::fs::write(&path, json.to_string()).ok();
+    f(&mut json);
+    if let Err(e) = std::fs::write(&path, json.to_string()) {
+        log_message(app, LogLevel::Error, format!("Error al guardar config: {e}"));
+    }
+}
+
+fn save_notification_enabled(app: &AppHandle, enabled: bool) {
+    modify_config(app, |json| {
+        json["notifications_enabled"] = serde_json::Value::Bool(enabled);
+    });
 }
 
 fn load_floating_bar_visible(app: &AppHandle) -> bool {
@@ -1193,13 +1201,9 @@ fn load_floating_bar_visible(app: &AppHandle) -> bool {
 }
 
 fn save_floating_bar_visible(app: &AppHandle, visible: bool) {
-    let path = config_path(app);
-    let mut json: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    json["floating_bar_visible"] = serde_json::Value::Bool(visible);
-    std::fs::write(&path, json.to_string()).ok();
+    modify_config(app, |json| {
+        json["floating_bar_visible"] = serde_json::Value::Bool(visible);
+    });
 }
 
 fn load_uptime_kuma_config(app: &AppHandle) -> Option<(String, String)> {
@@ -1214,14 +1218,10 @@ fn load_uptime_kuma_config(app: &AppHandle) -> Option<(String, String)> {
 }
 
 fn save_uptime_kuma_config_to_disk(app: &AppHandle, url: &str, api_key: &str) {
-    let path = config_path(app);
-    let mut json: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    json["uptime_kuma_url"] = serde_json::Value::String(url.to_string());
-    json["uptime_kuma_api_key"] = serde_json::Value::String(api_key.to_string());
-    std::fs::write(&path, json.to_string()).ok();
+    modify_config(app, |json| {
+        json["uptime_kuma_url"] = serde_json::Value::String(url.to_string());
+        json["uptime_kuma_api_key"] = serde_json::Value::String(api_key.to_string());
+    });
 }
 
 fn extract_label<'a>(labels: &'a str, key: &str) -> Option<&'a str> {
@@ -1357,15 +1357,11 @@ fn load_zabbix_config(app: &AppHandle) -> Option<(String, String, Vec<u8>)> {
 }
 
 fn save_zabbix_config_to_disk(app: &AppHandle, url: &str, token: &str, severities: &[u8]) {
-    let path = config_path(app);
-    let mut json: serde_json::Value = std::fs::read_to_string(&path)
-        .ok()
-        .and_then(|s| serde_json::from_str(&s).ok())
-        .unwrap_or_else(|| serde_json::json!({}));
-    json["zabbix_url"]        = serde_json::Value::String(url.to_string());
-    json["zabbix_api_token"]  = serde_json::Value::String(token.to_string());
-    json["zabbix_severities"] = serde_json::json!(severities);
-    std::fs::write(&path, json.to_string()).ok();
+    modify_config(app, |json| {
+        json["zabbix_url"]        = serde_json::Value::String(url.to_string());
+        json["zabbix_api_token"]  = serde_json::Value::String(token.to_string());
+        json["zabbix_severities"] = serde_json::json!(severities);
+    });
 }
 
 fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec<ZabbixProblem>, String> {
@@ -1789,10 +1785,14 @@ fn create_floating_bar_window(app: &AppHandle) {
         .build();
     match result {
         Ok(win) => {
+            let app2 = app.clone();
             win.on_window_event(move |event| {
                 if matches!(event, WindowEvent::CloseRequested { .. }) {
-                    // La barra flotante no se puede cerrar con el botón X;
-                    // se oculta desde el menú del tray.
+                    // Si el WM cierra la ventana, sincronizar el estado para que
+                    // el tray refleje la realidad.
+                    *app2.state::<FloatingBarState>().0.lock().unwrap() = false;
+                    save_floating_bar_visible(&app2, false);
+                    update_tray_menu(&app2);
                 }
             });
         }
