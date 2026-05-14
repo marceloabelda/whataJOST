@@ -278,44 +278,8 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
 
                             match install_result {
                                 Ok(status) if status.success() => {
-                                    #[cfg(target_os = "linux")]
-                                    if let Ok(exe) = std::env::current_exe() {
-                                        let pid = std::process::id().to_string();
-                                        let exe_str = exe.to_string_lossy().to_string();
-                                        log_message(&h, LogLevel::Info, format!(
-                                            "Instalación exitosa. Relanzando {} (PID actual: {})", exe_str, pid
-                                        ));
-                                        // Esperar que el PID viejo muera antes de exec: evita
-                                        // que el nuevo proceso vea el lock de single-instance activo.
-                                        match std::process::Command::new("sh")
-                                            .args([
-                                                "-c",
-                                                "while kill -0 \"$2\" 2>/dev/null; do sleep 0.2; done; exec \"$1\"",
-                                                "--",
-                                                &exe_str,
-                                                &pid,
-                                            ])
-                                            .stdin(std::process::Stdio::null())
-                                            .stdout(std::process::Stdio::null())
-                                            .stderr(std::process::Stdio::null())
-                                            .spawn() {
-                                            Ok(child) => log_message(&h, LogLevel::Info, format!(
-                                                "Shell de relaunch iniciado (PID: {})", child.id()
-                                            )),
-                                            Err(e) => log_message(&h, LogLevel::Error, format!(
-                                                "Error al iniciar relaunch shell: {}", e
-                                            )),
-                                        }
-                                    }
-                                    #[cfg(target_os = "windows")]
-                                    if let Ok(exe) = std::env::current_exe() {
-                                        let mut cmd = std::process::Command::new(&exe);
-                                        cmd.stdin(std::process::Stdio::null())
-                                            .stdout(std::process::Stdio::null())
-                                            .stderr(std::process::Stdio::null());
-                                        let _ = cmd.spawn();
-                                    }
-                                    h.exit(0);
+                                    log_message(&h, LogLevel::Info, "Instalación exitosa. Relanzando...");
+                                    h.restart();
                                 }
                                 Ok(status) => {
                                     h.dialog()
@@ -1526,6 +1490,7 @@ pub fn run() {
             None::<Vec<&str>>,
         ))
         .plugin(tauri_plugin_notification::init())
+        .plugin(tauri_plugin_process::init())
         .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
             show_window(app);
             if let Some(url) = args.iter().find(|a| a.starts_with("whatsapp://")) {
