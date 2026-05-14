@@ -1243,16 +1243,22 @@ fn poll_uptime_kuma_metrics(url: &str, api_key: &str) -> Result<Vec<UptimeKumaMo
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
         .build();
+    let auth_header = if api_key.contains(':') {
+            // Basic Auth con usuario:contraseña (Uptime Kuma sin API keys)
+            format!("Basic {}", base64::engine::general_purpose::STANDARD.encode(api_key.as_bytes()))
+        } else {
+            format!("apikey {}", api_key)
+        };
     let resp = agent
         .get(&metrics_url)
-        .set("Authorization", &format!("apikey {}", api_key))
+        .set("Authorization", &auth_header)
         .call()
         .map_err(|e| e.to_string())?;
     let status = resp.status();
     if status != 200 {
         let body = resp.into_string().unwrap_or_default();
         let hint = if status == 401 {
-            " — ¿API Key correcta? En Uptime Kuma: Configuración → API Keys"
+            " — ¿Credenciales correctas? Probar con usuario:contraseña o API Key de Uptime Kuma"
         } else if status == 404 {
             " — endpoint /metrics no encontrado, ¿URL correcta?"
         } else {
