@@ -1232,7 +1232,13 @@ fn extract_label<'a>(labels: &'a str, key: &str) -> Option<&'a str> {
 }
 
 fn poll_uptime_kuma_metrics(url: &str, api_key: &str) -> Result<Vec<UptimeKumaMonitor>, String> {
-    let metrics_url = format!("{}/metrics", url.trim_end_matches('/'));
+    let base = url.trim_end_matches('/');
+    // Si el usuario ya puso /metrics en la URL, no duplicar
+    let metrics_url = if base.ends_with("/metrics") {
+        base.to_string()
+    } else {
+        format!("{}/metrics", base)
+    };
     let agent = ureq::AgentBuilder::new()
         .timeout_connect(std::time::Duration::from_secs(5))
         .timeout(std::time::Duration::from_secs(10))
@@ -1242,6 +1248,18 @@ fn poll_uptime_kuma_metrics(url: &str, api_key: &str) -> Result<Vec<UptimeKumaMo
         .set("Authorization", &format!("apikey {}", api_key))
         .call()
         .map_err(|e| e.to_string())?;
+    let status = resp.status();
+    if status != 200 {
+        let body = resp.into_string().unwrap_or_default();
+        let hint = if status == 401 {
+            " — ¿API Key correcta? En Uptime Kuma: Configuración → API Keys"
+        } else if status == 404 {
+            " — endpoint /metrics no encontrado, ¿URL correcta?"
+        } else {
+            ""
+        };
+        return Err(format!("HTTP {} al consultar /metrics: {}{}", status, body.trim(), hint));
+    }
     let text = resp.into_string().map_err(|e| e.to_string())?;
     let mut monitors = Vec::new();
     for line in text.lines() {
@@ -1365,7 +1383,12 @@ fn save_zabbix_config_to_disk(app: &AppHandle, url: &str, token: &str, severitie
 }
 
 fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec<ZabbixProblem>, String> {
-    let api_url = format!("{}/api_jsonrpc.php", url.trim_end_matches('/'));
+    let base = url.trim_end_matches('/');
+    let api_url = if base.ends_with("/api_jsonrpc.php") {
+        base.to_string()
+    } else {
+        format!("{}/api_jsonrpc.php", base)
+    };
     let body = serde_json::json!({
         "jsonrpc": "2.0",
         "method": "problem.get",
@@ -1388,7 +1411,18 @@ fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec
         .set("Authorization", &format!("Bearer {}", token))
         .send_string(&body.to_string())
         .map_err(|e| e.to_string())?;
+    let status = resp.status();
     let text = resp.into_string().map_err(|e| e.to_string())?;
+    if status != 200 {
+        let hint = if status == 401 || status == 403 {
+            " — ¿API Token correcto? En Zabbix: Administración → Tokens de API"
+        } else if status == 404 {
+            " — endpoint /api_jsonrpc.php no encontrado, ¿URL correcta?"
+        } else {
+            ""
+        };
+        return Err(format!("HTTP {} al consultar API Zabbix: {}{}", status, text.trim(), hint));
+    }
     let json: serde_json::Value = serde_json::from_str(&text).map_err(|e| e.to_string())?;
     if let Some(err) = json.get("error") {
         return Err(err.get("data").and_then(|d| d.as_str()).unwrap_or("API error").to_string());
