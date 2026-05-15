@@ -2465,10 +2465,21 @@ pub fn run() {
 
             app.manage(tray);
 
-            let kuma_tray = TrayIconBuilder::new()
+            let kuma_menu = {
+                let open = MenuItem::with_id(app, "kuma_open", "Abrir Uptime Kuma", true, None::<&str>)?;
+                let cfg  = MenuItem::with_id(app, "kuma_cfg",  "Configurar",        true, None::<&str>)?;
+                Menu::with_items(app, &[&open, &cfg])?
+            };
+            let kuma_tray = TrayIconBuilder::with_id("whatajost-kuma")
                 .icon(Image::new_owned(make_letter_icon('K', 108, 112, 134, 0), 64, 64))
                 .tooltip("Uptime Kuma: sin configurar")
+                .menu(&kuma_menu)
                 .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "kuma_open" => { if let Some((url, _)) = load_uptime_kuma_config(app) { let _ = app.opener().open_url(&url, None::<&str>); } }
+                    "kuma_cfg"  => open_uptime_kuma_config_window(app),
+                    _ => {}
+                })
                 .on_tray_icon_event(|tray, ev| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
                         let a = tray.app_handle();
@@ -2480,10 +2491,21 @@ pub fn run() {
                 .build(app)?;
             app.manage(KumaTrayIcon(kuma_tray));
 
-            let zbx_tray = TrayIconBuilder::new()
+            let zbx_menu = {
+                let open = MenuItem::with_id(app, "zbx_open", "Abrir Zabbix",  true, None::<&str>)?;
+                let cfg  = MenuItem::with_id(app, "zbx_cfg2", "Configurar",    true, None::<&str>)?;
+                Menu::with_items(app, &[&open, &cfg])?
+            };
+            let zbx_tray = TrayIconBuilder::with_id("whatajost-zabbix")
                 .icon(Image::new_owned(make_letter_icon('Z', 108, 112, 134, 0), 64, 64))
                 .tooltip("Zabbix: sin configurar")
+                .menu(&zbx_menu)
                 .show_menu_on_left_click(false)
+                .on_menu_event(|app, event| match event.id.as_ref() {
+                    "zbx_open" => { if let Some((url, _, _)) = load_zabbix_config(app) { let _ = app.opener().open_url(&url, None::<&str>); } }
+                    "zbx_cfg2" => open_zabbix_config_window(app),
+                    _ => {}
+                })
                 .on_tray_icon_event(|tray, ev| {
                     if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
                         let a = tray.app_handle();
