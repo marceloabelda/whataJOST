@@ -1406,7 +1406,6 @@ fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec
             "suppressed": false,
             "recent": false
         },
-        "auth": token,
         "id": 1
     });
     let agent = ureq::AgentBuilder::new()

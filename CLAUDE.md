@@ -242,7 +242,7 @@ Thread background (`do_zabbix_poll`) idéntico al de UK: loop con `recv_timeout(
 
 **Ventana de config:** `public/zabbix.html` — form con URL + API Token + chips de severidad (coloreados por nivel, default Alto+Desastre). Capability `zabbix-window.json` para la ventana `zabbix-config`. Comandos IPC: `get_zabbix_config` (retorna `{url, api_token, severities}`), `save_zabbix_config` (guarda + trigerea poll).
 
-> **⚠ No tocar:** el doble envío del token (header + body) — Zabbix cambió la auth entre versiones y el doble modo cubre el rango 5.4–7.0.
+> **⚠ No tocar:** el envío del token solo por header `Authorization: Bearer`. Zabbix 6.0+ rechaza el campo `auth` en el body JSON-RPC.
 
 ---
 
