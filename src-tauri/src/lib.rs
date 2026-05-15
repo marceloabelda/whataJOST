@@ -1152,6 +1152,7 @@ struct TrayBadgeState {
 
 struct NotificationPopupState(Mutex<bool>);
 struct FloatingBarState(Mutex<bool>);
+struct MonitoringIconsVisibleState(Mutex<bool>);
 
 fn config_path(app: &AppHandle) -> std::path::PathBuf {
     let dir = app.path().app_config_dir().expect("failed to get config dir");
@@ -1198,6 +1199,21 @@ fn load_floating_bar_visible(app: &AppHandle) -> bool {
 fn save_floating_bar_visible(app: &AppHandle, visible: bool) {
     modify_config(app, |json| {
         json["floating_bar_visible"] = serde_json::Value::Bool(visible);
+    });
+}
+
+fn load_monitoring_icons_visible(app: &AppHandle) -> bool {
+    let path = config_path(app);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("monitoring_icons_visible").and_then(|e| e.as_bool()))
+        .unwrap_or(true)
+}
+
+fn save_monitoring_icons_visible(app: &AppHandle, visible: bool) {
+    modify_config(app, |json| {
+        json["monitoring_icons_visible"] = serde_json::Value::Bool(visible);
     });
 }
 
@@ -1697,6 +1713,9 @@ fn refresh_monitoring_icons(app: &AppHandle) {
         }
     }
 
+    let mon_visible = *app.state::<MonitoringIconsVisibleState>().0.lock().unwrap();
+    let _ = ktray.0.set_visible(mon_visible);
+
     // ── Zabbix ───────────────────────────────────────────────────────────────
     let ztray = app.state::<ZabbixTrayIcon>();
     match zbx_status {
@@ -1723,17 +1742,20 @@ fn refresh_monitoring_icons(app: &AppHandle) {
             let _ = ztray.0.set_tooltip(Some(tooltip.as_str()));
         }
     }
+    let _ = ztray.0.set_visible(mon_visible);
 }
 
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
-    let autostart_enabled     = app.autolaunch().is_enabled().unwrap_or(false);
-    let notifications_enabled = *app.state::<NotificationPopupState>().0.lock().unwrap();
-    let floating_bar_enabled  = *app.state::<FloatingBarState>().0.lock().unwrap();
+    let autostart_enabled       = app.autolaunch().is_enabled().unwrap_or(false);
+    let notifications_enabled   = *app.state::<NotificationPopupState>().0.lock().unwrap();
+    let floating_bar_enabled    = *app.state::<FloatingBarState>().0.lock().unwrap();
+    let monitoring_icons_visible = *app.state::<MonitoringIconsVisibleState>().0.lock().unwrap();
 
     let show_item      = MenuItem::with_id(app, "show",          "Abrir WhatsApp",          true, None::<&str>)?;
     let autostart_item = CheckMenuItem::with_id(app, "autostart","Iniciar con el sistema",   true, autostart_enabled,     None::<&str>)?;
     let notify_item    = CheckMenuItem::with_id(app, "toggle_notify","Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
-    let bar_item       = CheckMenuItem::with_id(app, "floating_bar", "Barra flotante",       true, floating_bar_enabled,  None::<&str>)?;
+    let bar_item       = CheckMenuItem::with_id(app, "floating_bar",      "Barra flotante",             true, floating_bar_enabled,     None::<&str>)?;
+    let mon_icons_item = CheckMenuItem::with_id(app, "monitoring_icons", "Íconos de monitoreo (K/Z)", true, monitoring_icons_visible, None::<&str>)?;
     let update_item    = MenuItem::with_id(app, "update",         "Buscar actualización",    true, None::<&str>)?;
     let uk_cfg_item    = MenuItem::with_id(app, "uk_config",      "Configurar Uptime Kuma",  true, None::<&str>)?;
     let zbx_cfg_item   = MenuItem::with_id(app, "zbx_config",    "Configurar Zabbix",       true, None::<&str>)?;
@@ -1790,7 +1812,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     }
 
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
-        &show_item, &autostart_item, &notify_item, &bar_item, &update_item,
+        &show_item, &autostart_item, &notify_item, &bar_item, &mon_icons_item, &update_item,
     ];
     if let Some(ref sub) = uk_sub  { items.push(sub); }
     if let Some(ref sub) = zbx_sub { items.push(sub); }
@@ -1799,7 +1821,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     items.push(&logs_item);
     items.push(&quit_item);
 
-    let _ = (&uk_items, &zbx_items, &bar_item);
+    let _ = (&uk_items, &zbx_items, &bar_item, &mon_icons_item);
     Menu::with_items(app, &items)
 }
 
@@ -2327,10 +2349,12 @@ pub fn run() {
             open_monitoring_url
         ])
         .setup(|app| {
-            let notifications_enabled = load_notification_enabled(app.handle());
-            let floating_bar_visible  = load_floating_bar_visible(app.handle());
+            let notifications_enabled    = load_notification_enabled(app.handle());
+            let floating_bar_visible     = load_floating_bar_visible(app.handle());
+            let monitoring_icons_visible = load_monitoring_icons_visible(app.handle());
             app.manage(NotificationPopupState(Mutex::new(notifications_enabled)));
             app.manage(FloatingBarState(Mutex::new(floating_bar_visible)));
+            app.manage(MonitoringIconsVisibleState(Mutex::new(monitoring_icons_visible)));
             app.manage(LogState(Arc::new(Mutex::new(Vec::new()))));
             app.manage(UptimeKumaState(Mutex::new(None)));
             app.manage(UptimeKumaTrigger(Mutex::new(None)));
@@ -2397,6 +2421,18 @@ pub fn run() {
                         } else if let Some(win) = app.get_webview_window("floating-bar") {
                             let _ = win.hide();
                         }
+                        update_tray_menu(app);
+                    }
+                    "monitoring_icons" => {
+                        let new_visible = {
+                            let state = app.state::<MonitoringIconsVisibleState>();
+                            let mut v = state.0.lock().unwrap();
+                            *v = !*v;
+                            *v
+                        };
+                        save_monitoring_icons_visible(app, new_visible);
+                        let _ = app.state::<KumaTrayIcon>().0.set_visible(new_visible);
+                        let _ = app.state::<ZabbixTrayIcon>().0.set_visible(new_visible);
                         update_tray_menu(app);
                     }
                     "autostart" => {
@@ -2516,6 +2552,10 @@ pub fn run() {
                 })
                 .build(app)?;
             app.manage(ZabbixTrayIcon(zbx_tray));
+
+            // Aplicar visibilidad inicial a K y Z
+            let _ = app.state::<KumaTrayIcon>().0.set_visible(monitoring_icons_visible);
+            let _ = app.state::<ZabbixTrayIcon>().0.set_visible(monitoring_icons_visible);
 
             // Polling de Uptime Kuma
             let (tx, rx) = std::sync::mpsc::channel::<()>();
