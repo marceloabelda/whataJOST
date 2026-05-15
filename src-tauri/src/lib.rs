@@ -1402,12 +1402,11 @@ fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec
         "jsonrpc": "2.0",
         "method": "problem.get",
         "params": {
-            "output": ["eventid", "name", "severity"],
+            "output": ["eventid", "name", "severity", "acknowledged", "suppressed"],
             "source": 0,
             "object": 0,
             "severities": severities,
             "suppressed": false,
-            "acknowledged": false,
             "recent": false
         },
         "id": 1
@@ -1441,6 +1440,13 @@ fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec
     let result = json.get("result").and_then(|r| r.as_array())
         .ok_or_else(|| "respuesta inesperada".to_string())?;
     let problems = result.iter().filter_map(|p| {
+        // Ignorar problemas acknowledged (Zabbix puede devolver "0"/"1" o bool)
+        let ack = p.get("acknowledged");
+        let is_acked = ack.and_then(|v| v.as_str()).map(|s| s == "1")
+            .or_else(|| ack.and_then(|v| v.as_bool()))
+            .unwrap_or(false);
+        if is_acked { return None; }
+
         let name = p.get("name")?.as_str()?.to_string();
         let sev_val = p.get("severity")?;
         let severity = sev_val.as_u64().map(|n| n as u8)
