@@ -22,4 +22,5 @@ commands.allow = [
   "get_zabbix_config",
   "save_zabbix_config",
   "get_monitoring_status",
+  "open_monitoring_url",
 ]
