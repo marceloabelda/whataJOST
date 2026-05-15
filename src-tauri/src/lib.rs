@@ -1405,8 +1405,8 @@ fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec
             "source": 0,
             "object": 0,
             "severities": severities,
-            "recent": false,
-            "filter": { "suppressed": 0 }
+            "suppressed": false,
+            "recent": false
         },
         "id": 1
     });
