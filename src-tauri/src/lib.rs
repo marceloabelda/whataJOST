@@ -1665,32 +1665,19 @@ fn regenerate_tray_icon(app: &AppHandle) {
 fn update_monitoring_tray_icons(app: &AppHandle) {
     let uk_status  = app.state::<UptimeKumaState>().0.lock().unwrap().clone();
     let zbx_status = app.state::<ZabbixState>().0.lock().unwrap().clone();
+    let app2 = app.clone();
 
-    // ── Íconos Uptime Kuma ────────────────────────────────────────────────────
-    let mut new_uk: Vec<TrayIcon> = Vec::new();
-    match uk_status {
-        None => {}
-        Some(ref s) if !s.reachable => {
-            if let Ok(icon) = TrayIconBuilder::new()
-                .icon(Image::new_owned(make_letter_icon('K', 250, 179, 135), 64, 64))
-                .tooltip("Uptime Kuma: sin conexión")
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, ev| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
-                        let a = tray.app_handle();
-                        if let Some((url, _)) = load_uptime_kuma_config(a) {
-                            let _ = a.opener().open_url(&url, None::<&str>);
-                        }
-                    }
-                })
-                .build(app) { new_uk.push(icon); }
-        }
-        Some(ref s) => {
-            let down: Vec<&UptimeKumaMonitor> = s.monitors.iter().filter(|m| !m.up).collect();
-            if down.is_empty() {
+    // TrayIconBuilder::build requiere la main thread (GTK en Linux).
+    // Los polling threads son background — hay que despachar la creación.
+    let _ = app.run_on_main_thread(move || {
+        // ── Íconos Uptime Kuma ────────────────────────────────────────────────
+        let mut new_uk: Vec<TrayIcon> = Vec::new();
+        match uk_status {
+            None => {}
+            Some(ref s) if !s.reachable => {
                 if let Ok(icon) = TrayIconBuilder::new()
-                    .icon(Image::new_owned(make_letter_icon('K', 166, 227, 161), 64, 64))
-                    .tooltip("Uptime Kuma: todos los monitores OK")
+                    .icon(Image::new_owned(make_letter_icon('K', 250, 179, 135), 64, 64))
+                    .tooltip("Uptime Kuma: sin conexión")
                     .show_menu_on_left_click(false)
                     .on_tray_icon_event(|tray, ev| {
                         if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
@@ -1700,13 +1687,14 @@ fn update_monitoring_tray_icons(app: &AppHandle) {
                             }
                         }
                     })
-                    .build(app) { new_uk.push(icon); }
-            } else {
-                for m in &down {
-                    let tooltip = format!("Uptime Kuma: {} — CAÍDO", m.name);
+                    .build(&app2) { new_uk.push(icon); }
+            }
+            Some(ref s) => {
+                let down: Vec<&UptimeKumaMonitor> = s.monitors.iter().filter(|m| !m.up).collect();
+                if down.is_empty() {
                     if let Ok(icon) = TrayIconBuilder::new()
-                        .icon(Image::new_owned(make_letter_icon('K', 243, 139, 168), 64, 64))
-                        .tooltip(tooltip.as_str())
+                        .icon(Image::new_owned(make_letter_icon('K', 166, 227, 161), 64, 64))
+                        .tooltip("Uptime Kuma: todos los monitores OK")
                         .show_menu_on_left_click(false)
                         .on_tray_icon_event(|tray, ev| {
                             if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
@@ -1716,53 +1704,36 @@ fn update_monitoring_tray_icons(app: &AppHandle) {
                                 }
                             }
                         })
-                        .build(app) { new_uk.push(icon); }
+                        .build(&app2) { new_uk.push(icon); }
+                } else {
+                    for m in &down {
+                        let tooltip = format!("Uptime Kuma: {} — CAÍDO", m.name);
+                        if let Ok(icon) = TrayIconBuilder::new()
+                            .icon(Image::new_owned(make_letter_icon('K', 243, 139, 168), 64, 64))
+                            .tooltip(tooltip.as_str())
+                            .show_menu_on_left_click(false)
+                            .on_tray_icon_event(|tray, ev| {
+                                if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
+                                    let a = tray.app_handle();
+                                    if let Some((url, _)) = load_uptime_kuma_config(a) {
+                                        let _ = a.opener().open_url(&url, None::<&str>);
+                                    }
+                                }
+                            })
+                            .build(&app2) { new_uk.push(icon); }
+                    }
                 }
             }
         }
-    }
 
-    // ── Íconos Zabbix ─────────────────────────────────────────────────────────
-    let mut new_zbx: Vec<TrayIcon> = Vec::new();
-    match zbx_status {
-        None => {}
-        Some(ref s) if !s.reachable => {
-            if let Ok(icon) = TrayIconBuilder::new()
-                .icon(Image::new_owned(make_letter_icon('Z', 250, 179, 135), 64, 64))
-                .tooltip("Zabbix: sin conexión")
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, ev| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
-                        let a = tray.app_handle();
-                        if let Some((url, _, _)) = load_zabbix_config(a) {
-                            let _ = a.opener().open_url(&url, None::<&str>);
-                        }
-                    }
-                })
-                .build(app) { new_zbx.push(icon); }
-        }
-        Some(ref s) if s.problems.is_empty() => {
-            if let Ok(icon) = TrayIconBuilder::new()
-                .icon(Image::new_owned(make_letter_icon('Z', 166, 227, 161), 64, 64))
-                .tooltip("Zabbix: sin problemas")
-                .show_menu_on_left_click(false)
-                .on_tray_icon_event(|tray, ev| {
-                    if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
-                        let a = tray.app_handle();
-                        if let Some((url, _, _)) = load_zabbix_config(a) {
-                            let _ = a.opener().open_url(&url, None::<&str>);
-                        }
-                    }
-                })
-                .build(app) { new_zbx.push(icon); }
-        }
-        Some(ref s) => {
-            for p in &s.problems {
-                let sev = SEVERITY_LABELS.get(p.severity as usize).copied().unwrap_or("?");
-                let tooltip = format!("Zabbix: [{}] {}", sev, p.name);
+        // ── Íconos Zabbix ─────────────────────────────────────────────────────
+        let mut new_zbx: Vec<TrayIcon> = Vec::new();
+        match zbx_status {
+            None => {}
+            Some(ref s) if !s.reachable => {
                 if let Ok(icon) = TrayIconBuilder::new()
-                    .icon(Image::new_owned(make_letter_icon('Z', 243, 139, 168), 64, 64))
-                    .tooltip(tooltip.as_str())
+                    .icon(Image::new_owned(make_letter_icon('Z', 250, 179, 135), 64, 64))
+                    .tooltip("Zabbix: sin conexión")
                     .show_menu_on_left_click(false)
                     .on_tray_icon_event(|tray, ev| {
                         if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
@@ -1772,14 +1743,48 @@ fn update_monitoring_tray_icons(app: &AppHandle) {
                             }
                         }
                     })
-                    .build(app) { new_zbx.push(icon); }
+                    .build(&app2) { new_zbx.push(icon); }
+            }
+            Some(ref s) if s.problems.is_empty() => {
+                if let Ok(icon) = TrayIconBuilder::new()
+                    .icon(Image::new_owned(make_letter_icon('Z', 166, 227, 161), 64, 64))
+                    .tooltip("Zabbix: sin problemas")
+                    .show_menu_on_left_click(false)
+                    .on_tray_icon_event(|tray, ev| {
+                        if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
+                            let a = tray.app_handle();
+                            if let Some((url, _, _)) = load_zabbix_config(a) {
+                                let _ = a.opener().open_url(&url, None::<&str>);
+                            }
+                        }
+                    })
+                    .build(&app2) { new_zbx.push(icon); }
+            }
+            Some(ref s) => {
+                for p in &s.problems {
+                    let sev = SEVERITY_LABELS.get(p.severity as usize).copied().unwrap_or("?");
+                    let tooltip = format!("Zabbix: [{}] {}", sev, p.name);
+                    if let Ok(icon) = TrayIconBuilder::new()
+                        .icon(Image::new_owned(make_letter_icon('Z', 243, 139, 168), 64, 64))
+                        .tooltip(tooltip.as_str())
+                        .show_menu_on_left_click(false)
+                        .on_tray_icon_event(|tray, ev| {
+                            if let TrayIconEvent::Click { button: MouseButton::Left, button_state: MouseButtonState::Up, .. } = ev {
+                                let a = tray.app_handle();
+                                if let Some((url, _, _)) = load_zabbix_config(a) {
+                                    let _ = a.opener().open_url(&url, None::<&str>);
+                                }
+                            }
+                        })
+                        .build(&app2) { new_zbx.push(icon); }
+                }
             }
         }
-    }
 
-    let state = app.state::<MonitoringTrayIcons>();
-    let mut icons = state.0.lock().unwrap();
-    *icons = (new_uk, new_zbx);
+        let state = app2.state::<MonitoringTrayIcons>();
+        let mut icons = state.0.lock().unwrap();
+        *icons = (new_uk, new_zbx);
+    });
 }
 
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
