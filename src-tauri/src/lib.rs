@@ -1439,7 +1439,9 @@ fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec
         .ok_or_else(|| "respuesta inesperada".to_string())?;
     let problems = result.iter().filter_map(|p| {
         let name = p.get("name")?.as_str()?.to_string();
-        let severity = p.get("severity")?.as_str()?.parse::<u8>().ok()?;
+        let sev_val = p.get("severity")?;
+        let severity = sev_val.as_u64().map(|n| n as u8)
+            .or_else(|| sev_val.as_str().and_then(|s| s.parse::<u8>().ok()))?;
         Some(ZabbixProblem { name, severity })
     }).collect();
     Ok(problems)
