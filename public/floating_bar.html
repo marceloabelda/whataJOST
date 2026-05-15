@@ -67,18 +67,24 @@
     .status-text.err { color: #f38ba8; }
     .status-text.warn { color: #f9e2af; }
     .status-text.off { color: #6c7086; }
+    .section-label.clickable {
+      cursor: pointer;
+      color: #89b4fa;
+      text-decoration: underline dotted;
+    }
+    .section-label.clickable:hover { color: #cdd6f4; }
   </style>
 </head>
 <body>
   <div id="bar" data-tauri-drag-region>
     <div class="section" id="uk-section">
-      <span class="section-label">UK</span>
+      <span class="section-label" id="uk-label">UK</span>
       <div class="dots" id="uk-dots"></div>
       <span class="status-text off" id="uk-text">cargando</span>
     </div>
     <div class="divider"></div>
     <div class="section" id="zbx-section">
-      <span class="section-label">ZBX</span>
+      <span class="section-label" id="zbx-label">ZBX</span>
       <div class="dots" id="zbx-dots"></div>
       <span class="status-text off" id="zbx-text">cargando</span>
     </div>
@@ -101,11 +107,29 @@
         return d;
       }
 
+      function openUrl(url) {
+        if (url) ipc.invoke('open_monitoring_url', { url: url });
+      }
+
+      function setLabelClickable(id, url) {
+        var el = document.getElementById(id);
+        if (url) {
+          el.classList.add('clickable');
+          el.onclick = function() { openUrl(url); };
+        } else {
+          el.classList.remove('clickable');
+          el.onclick = null;
+        }
+      }
+
       function renderStatus(status) {
         var ukDots  = document.getElementById('uk-dots');
         var ukText  = document.getElementById('uk-text');
         var zbxDots = document.getElementById('zbx-dots');
         var zbxText = document.getElementById('zbx-text');
+
+        setLabelClickable('uk-label', status.uk_url);
+        setLabelClickable('zbx-label', status.zbx_url);
 
         // ── Uptime Kuma ──
         ukDots.innerHTML = '';

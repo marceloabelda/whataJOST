@@ -1406,6 +1406,7 @@ fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec
             "object": 0,
             "severities": severities,
             "suppressed": false,
+            "acknowledged": false,
             "recent": false
         },
         "id": 1
@@ -1830,14 +1831,9 @@ fn create_floating_bar_window(app: &AppHandle) {
         .build();
     match result {
         Ok(win) => {
-            let app2 = app.clone();
             win.on_window_event(move |event| {
-                if matches!(event, WindowEvent::CloseRequested { .. }) {
-                    // Si el WM cierra la ventana, sincronizar el estado para que
-                    // el tray refleje la realidad.
-                    *app2.state::<FloatingBarState>().0.lock().unwrap() = false;
-                    save_floating_bar_visible(&app2, false);
-                    update_tray_menu(&app2);
+                if let WindowEvent::CloseRequested { api, .. } = event {
+                    api.prevent_close();
                 }
             });
         }
@@ -1856,15 +1852,20 @@ struct MonitoringBarStatus {
     uk_configured: bool,
     uk_reachable: bool,
     uk_monitors: Vec<BarMonitor>,
+    uk_url: Option<String>,
     zbx_configured: bool,
     zbx_reachable: bool,
     zbx_problems: Vec<BarProblem>,
+    zbx_url: Option<String>,
 }
 
 #[tauri::command]
 fn get_monitoring_status(app: AppHandle) -> MonitoringBarStatus {
     let uk_guard  = app.state::<UptimeKumaState>().0.lock().unwrap().clone();
     let zbx_guard = app.state::<ZabbixState>().0.lock().unwrap().clone();
+
+    let uk_url = load_uptime_kuma_config(&app).map(|(url, _)| url);
+    let zbx_url = load_zabbix_config(&app).map(|(url, _, _)| url);
 
     let (uk_configured, uk_reachable, uk_monitors) = match uk_guard {
         Some(s) => (true, s.reachable, s.monitors.iter().map(|m| BarMonitor { name: m.name.clone(), up: m.up }).collect()),
@@ -1880,7 +1881,22 @@ fn get_monitoring_status(app: AppHandle) -> MonitoringBarStatus {
         None => (false, false, vec![]),
     };
 
-    MonitoringBarStatus { uk_configured, uk_reachable, uk_monitors, zbx_configured, zbx_reachable, zbx_problems }
+    MonitoringBarStatus { uk_configured, uk_reachable, uk_monitors, uk_url, zbx_configured, zbx_reachable, zbx_problems, zbx_url }
+}
+
+#[tauri::command]
+fn open_monitoring_url(app: AppHandle, url: String) {
+    use tauri_plugin_opener::OpenerExt;
+    if let Err(e) = app.opener().open_url(&url, None::<&str>) {
+        log_message(&app, LogLevel::Warn, format!("open_monitoring_url falló ({}), usando xdg-open...", e));
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open")
+            .arg(&url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
 }
 
 #[cfg(target_os = "linux")]
@@ -2258,7 +2274,8 @@ pub fn run() {
             save_uptime_kuma_config,
             get_zabbix_config,
             save_zabbix_config,
-            get_monitoring_status
+            get_monitoring_status,
+            open_monitoring_url
         ])
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());
@@ -2326,9 +2343,13 @@ pub fn run() {
                         };
                         save_floating_bar_visible(app, new_visible);
                         if new_visible {
-                            create_floating_bar_window(app);
+                            if let Some(win) = app.get_webview_window("floating-bar") {
+                                let _ = win.show();
+                            } else {
+                                create_floating_bar_window(app);
+                            }
                         } else if let Some(win) = app.get_webview_window("floating-bar") {
-                            let _ = win.close();
+                            let _ = win.hide();
                         }
                         update_tray_menu(app);
                     }
