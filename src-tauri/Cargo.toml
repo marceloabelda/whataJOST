@@ -1,6 +1,6 @@
 [package]
 name = "whatajost"
-version = "1.1.77"
+version = "1.1.78"
 description = "WhatsApp Web wrapper with tauri"
 authors = ["jude7733"]
 edition = "2021"
