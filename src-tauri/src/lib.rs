@@ -1402,9 +1402,11 @@ fn poll_zabbix_problems(url: &str, token: &str, severities: &[u8]) -> Result<Vec
         "method": "problem.get",
         "params": {
             "output": ["eventid", "name", "severity"],
+            "source": 0,
+            "object": 0,
             "severities": severities,
-            "suppressed": false,
-            "recent": false
+            "recent": false,
+            "filter": { "suppressed": 0 }
         },
         "id": 1
     });
