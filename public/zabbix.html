@@ -138,7 +138,7 @@
         if (!severities.length) { setStatus('Seleccioná al menos una severidad.', true); return; }
         setStatus('Guardando...');
         try {
-          var p = ipc.invoke('save_zabbix_config', { url: url, api_token: token, severities: severities });
+          var p = ipc.invoke('save_zabbix_config', { url: url, apiToken: token, severities: severities });
           if (!p || typeof p.then !== 'function') {
             setStatus('Error: invoke no devolvió Promise. Tipo: ' + typeof p, true);
             return;
@@ -156,7 +156,7 @@
       window.clear_ = function() {
         setStatus('Quitando config...');
         try {
-          var p = ipc.invoke('save_zabbix_config', { url: '', api_token: '', severities: [] });
+          var p = ipc.invoke('save_zabbix_config', { url: '', apiToken: '', severities: [] });
           if (!p || typeof p.then !== 'function') {
             setStatus('Error: invoke no devolvió Promise. Tipo: ' + typeof p, true);
             return;
