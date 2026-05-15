@@ -209,19 +209,22 @@ Thread background (`do_uptime_kuma_poll`) corre en loop con `recv_timeout(30s)` 
 **Flujo de polling:**
 1. Lee `uptime_kuma_url` + `uptime_kuma_api_key` de config.json.
 2. Si no hay config → limpia estado, ícono sin punto.
-3. Si hay config → `GET <url>/metrics` con `Authorization: apikey <key>` via `ureq`.
-4. Parsea formato Prometheus: líneas `monitor_status{monitor_name="...", ...} 1|0`.
-5. Compara con estado previo (`UptimeKumaState`) → notifica si algún monitor cambia de UP↔DOWN.
-6. Actualiza `TrayBadgeState.uk_dot` (AllUp/SomeDown/Unreachable) y llama `regenerate_tray_icon`.
-7. Llama `update_tray_menu` para reconstruir el menú del tray.
+3. Si hay config → `GET <url>/metrics` con `Authorization: Basic <base64>` via `ureq`.
+4. Si el path `/metrics` no está en la URL, se agrega automáticamente (sin duplicar).
+5. Parsea formato Prometheus: líneas `monitor_status{monitor_name="...", ...} 1|0`.
+6. Compara con estado previo (`UptimeKumaState`) → notifica si algún monitor cambia de UP↔DOWN.
+7. Actualiza `TrayBadgeState.uk_dot` (AllUp/SomeDown/Unreachable) y llama `regenerate_tray_icon`.
+8. Llama `update_tray_menu` para reconstruir el menú del tray.
+
+**Autenticación Basic Auth (lib.rs:1246):** Uptime Kuma usa Basic Auth con usuario vacío y la API key como contraseña. Si el valor ya contiene `:` (formato `usuario:contraseña` o `:key`), se codifica tal cual en base64. Si no, se codifica `:api_key` (usuario vacío).
 
 **Ícono del tray:** `regenerate_tray_icon` combina el punto UK (esquina inferior izquierda, radio 8) y el badge de mensajes (esquina superior derecha, radio 14). Los colores del punto: verde (AllUp), rojo (SomeDown), naranja (Unreachable), sin punto (NotConfigured).
 
 **Menú del tray — Submenu UK:** `build_tray_menu` construye el menú completo en cada update. Si hay estado UK, agrega un `Submenu` con `✓/✗ NombreMonitor` (items no clickeables) y un header con el total. Ítem "Configurar Uptime Kuma" siempre visible.
 
-**Ventana de config:** `public/uptime_kuma.html` — form con URL y API Key. Capability `uptime-kuma-window.json` para la ventana `uptime-kuma-config`. Comandos IPC: `get_uptime_kuma_config` (retorna `{url, api_key}`), `save_uptime_kuma_config` (guarda + trigerea poll inmediato).
+**Ventana de config:** `public/uptime_kuma.html` — form con URL y API Key. Capability `uptime-kuma-window.json` para la ventana `uptime-kuma-config`. Comandos IPC: `get_uptime_kuma_config` (retorna `{url, api_key}`), `save_uptime_kuma_config` (guarda + trigerea poll inmediato). Tauri auto-renombra los args de snake_case a camelCase: el parámetro Rust `api_key` se invoca como `apiKey` desde JS.
 
-> **⚠ No tocar:** el `recv_timeout` en el polling loop (es el mecanismo de trigger inmediato al guardar config). `regenerate_tray_icon` siempre lee `uk_dot` + `current_count` frescos del state — no cachear esos valores.
+> **⚠ No tocar:** el `recv_timeout` en el polling loop (es el mecanismo de trigger inmediato al guardar config). `regenerate_tray_icon` siempre lee `uk_dot` + `current_count` frescos del state — no cachear esos valores. La codificación Basic Auth con usuario vacío `:api_key`.
 
 ---
 
@@ -233,16 +236,17 @@ Thread background (`do_zabbix_poll`) idéntico al de UK: loop con `recv_timeout(
 1. Lee `zabbix_url` + `zabbix_api_token` + `zabbix_severities` de config.json.
 2. Si no hay config → limpia estado, ícono sin punto Zabbix.
 3. Si hay config → `POST <url>/api_jsonrpc.php` con body JSON-RPC `problem.get` filtrado por severidades.
-4. El token se pasa doble: `Authorization: Bearer <token>` header (Zabbix 6+) y `"auth": token` en el body (Zabbix 5.4 compat).
-5. Parsea array `result` → `Vec<ZabbixProblem>` (name + severity u8).
-6. Notifica problemas nuevos y resueltos (comparando con estado previo).
-7. Actualiza `TrayBadgeState.zbx_dot` (Ok/Problems(n)/Unreachable) y reconstruye ícono y menú.
+4. Si el path `/api_jsonrpc.php` no está en la URL, se agrega automáticamente.
+5. Autenticación: solo header `Authorization: Bearer <token>`. No se envía `auth` en el body (Zabbix 6.0+ lo rechaza por no ser parte del estándar JSON-RPC 2.0).
+6. Parsea array `result` → `Vec<ZabbixProblem>` (name + severity u8). `severity` se parsea como integer primero, string como fallback (Zabbix alterna el formato según versión).
+7. Notifica problemas nuevos y resueltos (comparando con estado previo).
+8. Actualiza `TrayBadgeState.zbx_dot` (Ok/Problems(n)/Unreachable) y reconstruye ícono y menú.
 
-**Severidades:** `SEVERITY_LABELS = ["No clasificado", "Información", "Advertencia", "Promedio", "Alto", "Desastre"]` (índice 0–5). El usuario elige cuáles recibir; los valores se almacenan como `Vec<u8>`.
+**Severidades:** `SEVERITY_LABELS = ["No clasificado", "Información", "Advertencia", "Promedio", "Alto", "Desastre"]` (índice 0–5). El usuario elige cuáles recibir; los valores se almacenan como `Vec<u8>`. El parámetro `severities` en el filtro `problem.get` se envía como array de enteros (ej. `[4, 5]`).
 
-**Ventana de config:** `public/zabbix.html` — form con URL + API Token + chips de severidad (coloreados por nivel, default Alto+Desastre). Capability `zabbix-window.json` para la ventana `zabbix-config`. Comandos IPC: `get_zabbix_config` (retorna `{url, api_token, severities}`), `save_zabbix_config` (guarda + trigerea poll).
+**Ventana de config:** `public/zabbix.html` — form con URL + API Token + chips de severidad (coloreados por nivel, default Alto+Desastre). Capability `zabbix-window.json` para la ventana `zabbix-config`. Comandos IPC: `get_zabbix_config` (retorna `{url, api_token, severities}`), `save_zabbix_config(url, apiToken, severities)` — notar que Tauri auto-renombra `api_token` → `apiToken` en los args. La respuesta de `get_zabbix_config` mantiene snake_case (`cfg.api_token`).
 
-> **⚠ No tocar:** el envío del token solo por header `Authorization: Bearer`. Zabbix 6.0+ rechaza el campo `auth` en el body JSON-RPC.
+> **⚠ No tocar:** solo header `Authorization: Bearer`, sin `auth` en body. El parseo dual de `severity` (integer + string fallback) — Zabbix cambió el tipo entre versiones. Tauri auto-renombra args de comandos a camelCase (`api_token` → `apiToken`).
 
 ---
 
