@@ -4,6 +4,41 @@ WhatsApp Web para equipos de infraestructura. Wrapper nativo de WhatsApp Web con
 
 Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
+```
+                        ┌──────────────────────────────────┐
+                        │           WhataJOST              │
+                        │   WhatsApp Web para infra        │
+                        └──────────────┬───────────────────┘
+                                       │
+           ┌───────────────────────────┼──────────────────────────┐
+           │                           │                          │
+           ▼                           ▼                          ▼
+  ┌─────────────────┐       ┌──────────────────┐       ┌──────────────────┐
+  │  WhatsApp Web   │       │   Uptime Kuma    │       │     Zabbix       │
+  │                 │       │                  │       │                  │
+  │  mensajes       │       │  GET /metrics    │       │  POST JSON-RPC   │
+  │  archivos       │       │  cada 30 s       │       │  cada 30 s       │
+  │  paste/drop     │       │  ● verde / rojo  │       │  ● verde / rojo  │
+  │  notificaciones │       │  notifica cambio │       │  por severidad   │
+  │  deep links     │       │  acknowledged    │       │  acknowledged    │
+  └─────────────────┘       └────────┬─────────┘       └────────┬─────────┘
+                                     └──────────┬───────────────┘
+                                                │
+                                   ┌────────────▼─────────────┐
+                                   │       System Tray        │
+                                   │                          │
+                                   │  [ico] [● UK] [● ZBX] [N]│
+                                   │         ↑       ↑     ↑  │
+                                   │       Uptime  Zabbix badge│
+                                   │       Kuma    probl.  msgs│
+                                   │                          │
+                                   │  ┌──────────────────────┐│
+                                   │  │    Barra flotante    ││
+                                   │  │  ●s1 ●s2 │ ✗prob1   ││
+                                   │  └──────────────────────┘│
+                                   └──────────────────────────┘
+```
+
 ---
 
 ## Características

@@ -1208,7 +1208,7 @@ fn load_monitoring_icons_visible(app: &AppHandle) -> bool {
         .ok()
         .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
         .and_then(|v| v.get("monitoring_icons_visible").and_then(|e| e.as_bool()))
-        .unwrap_or(true)
+        .unwrap_or(false)
 }
 
 fn save_monitoring_icons_visible(app: &AppHandle, visible: bool) {
