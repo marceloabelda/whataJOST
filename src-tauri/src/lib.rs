@@ -338,13 +338,30 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
 }
 
 fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
+    create_whatsapp_window_impl(app, "whatsapp-web", None)
+}
+
+fn create_whatsapp_window_2(app: &AppHandle) -> tauri::Result<()> {
+    let data_dir = app.path().app_local_data_dir()
+        .map(|p| p.join("account-2"))
+        .ok();
+    create_whatsapp_window_impl(app, "whatsapp-web-2", data_dir)
+}
+
+fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<std::path::PathBuf>) -> tauri::Result<()> {
     let opener = app.clone();
-    let window = WebviewWindowBuilder::new(
+    let label_owned = label.to_string();
+    let title = if label == "whatsapp-web" {
+        format!("WhataJOST v{}", env!("CARGO_PKG_VERSION"))
+    } else {
+        format!("WhataJOST v{} — Cuenta 2", env!("CARGO_PKG_VERSION"))
+    };
+    let builder = WebviewWindowBuilder::new(
         app,
-        "whatsapp-web",
+        label,
         WebviewUrl::External("https://web.whatsapp.com/".parse().unwrap()),
     )
-    .title(format!("WhataJOST v{}", env!("CARGO_PKG_VERSION")))
+    .title(title)
     .inner_size(1280.0, 800.0)
     .visible(false)
     .focused(false)
@@ -357,7 +374,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
         // Interceptar navegación a blob: — en lugar de navegar, disparar descarga via JS
         if scheme == "blob" {
             let url_str = url.as_str().to_string();
-            if let Some(win) = opener.get_webview_window("whatsapp-web") {
+            if let Some(win) = opener.get_webview_window(&label_owned) {
                 let safe = url_str.replace('\\', "\\\\").replace('\'', "\\'");
                 let _ = win.eval(&format!(
                     "try{{console.log('[whataJOST] blob nav interceptado');if(typeof window.__waDownloadBlob==='function'){{window.__waDownloadBlob('{}');}}}}catch(e){{console.error('[whataJOST] blob nav error:',e);}}",
@@ -400,7 +417,7 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 serde_json::to_string(&b64).unwrap(),
                 serde_json::to_string(&mime).unwrap(),
             );
-            if let Some(win) = opener.get_webview_window("whatsapp-web") {
+            if let Some(win) = opener.get_webview_window(&label_owned) {
                 let _ = win.eval(&js);
             }
             return false;
@@ -969,8 +986,13 @@ fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {
                 }
             };
         })();
-    "#)
-    .build()?;
+    "#);
+    let builder = if let Some(dir) = data_dir {
+        builder.data_directory(dir)
+    } else {
+        builder
+    };
+    let window = builder.build()?;
 
     // Enable spellcheck and devtools on linux webviews
     #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
@@ -1153,6 +1175,7 @@ struct TrayBadgeState {
 struct NotificationPopupState(Mutex<bool>);
 struct FloatingBarState(Mutex<bool>);
 struct MonitoringIconsVisibleState(Mutex<bool>);
+struct Account2VisibleState(Mutex<bool>);
 
 fn config_path(app: &AppHandle) -> std::path::PathBuf {
     let dir = app.path().app_config_dir().expect("failed to get config dir");
@@ -1214,6 +1237,21 @@ fn load_monitoring_icons_visible(app: &AppHandle) -> bool {
 fn save_monitoring_icons_visible(app: &AppHandle, visible: bool) {
     modify_config(app, |json| {
         json["monitoring_icons_visible"] = serde_json::Value::Bool(visible);
+    });
+}
+
+fn load_account2_visible(app: &AppHandle) -> bool {
+    let path = config_path(app);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("account2_visible").and_then(|e| e.as_bool()))
+        .unwrap_or(false)
+}
+
+fn save_account2_visible(app: &AppHandle, visible: bool) {
+    modify_config(app, |json| {
+        json["account2_visible"] = serde_json::Value::Bool(visible);
     });
 }
 
@@ -1756,12 +1794,14 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let notifications_enabled   = *app.state::<NotificationPopupState>().0.lock().unwrap();
     let floating_bar_enabled    = *app.state::<FloatingBarState>().0.lock().unwrap();
     let monitoring_icons_visible = *app.state::<MonitoringIconsVisibleState>().0.lock().unwrap();
+    let account2_visible        = *app.state::<Account2VisibleState>().0.lock().unwrap();
 
     let show_item      = MenuItem::with_id(app, "show",          "Abrir WhatsApp",          true, None::<&str>)?;
     let autostart_item = CheckMenuItem::with_id(app, "autostart","Iniciar con el sistema",   true, autostart_enabled,     None::<&str>)?;
     let notify_item    = CheckMenuItem::with_id(app, "toggle_notify","Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
     let bar_item       = CheckMenuItem::with_id(app, "floating_bar",      "Barra flotante",             true, floating_bar_enabled,     None::<&str>)?;
     let mon_icons_item = CheckMenuItem::with_id(app, "monitoring_icons", "Íconos de monitoreo (K/Z)", true, monitoring_icons_visible, None::<&str>)?;
+    let account2_item  = CheckMenuItem::with_id(app, "account2", "Segunda cuenta WhatsApp",  true, account2_visible, None::<&str>)?;
     let update_item    = MenuItem::with_id(app, "update",         "Buscar actualización",    true, None::<&str>)?;
     let uk_cfg_item    = MenuItem::with_id(app, "uk_config",      "Configurar Uptime Kuma",  true, None::<&str>)?;
     let zbx_cfg_item   = MenuItem::with_id(app, "zbx_config",    "Configurar Zabbix",       true, None::<&str>)?;
@@ -1818,7 +1858,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     }
 
     let mut items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
-        &show_item, &autostart_item, &notify_item, &bar_item, &mon_icons_item, &update_item,
+        &show_item, &autostart_item, &notify_item, &bar_item, &mon_icons_item, &account2_item, &update_item,
     ];
     if let Some(ref sub) = uk_sub  { items.push(sub); }
     if let Some(ref sub) = zbx_sub { items.push(sub); }
@@ -1827,7 +1867,7 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     items.push(&logs_item);
     items.push(&quit_item);
 
-    let _ = (&uk_items, &zbx_items, &bar_item, &mon_icons_item);
+    let _ = (&uk_items, &zbx_items, &bar_item, &mon_icons_item, &account2_item);
     Menu::with_items(app, &items)
 }
 
@@ -2358,9 +2398,11 @@ pub fn run() {
             let notifications_enabled    = load_notification_enabled(app.handle());
             let floating_bar_visible     = load_floating_bar_visible(app.handle());
             let monitoring_icons_visible = load_monitoring_icons_visible(app.handle());
+            let account2_visible         = load_account2_visible(app.handle());
             app.manage(NotificationPopupState(Mutex::new(notifications_enabled)));
             app.manage(FloatingBarState(Mutex::new(floating_bar_visible)));
             app.manage(MonitoringIconsVisibleState(Mutex::new(monitoring_icons_visible)));
+            app.manage(Account2VisibleState(Mutex::new(account2_visible)));
             app.manage(LogState(Arc::new(Mutex::new(Vec::new()))));
             app.manage(UptimeKumaState(Mutex::new(None)));
             app.manage(UptimeKumaTrigger(Mutex::new(None)));
@@ -2369,6 +2411,11 @@ pub fn run() {
             log_message(app.handle(), LogLevel::Info, "WhataJOST iniciado");
 
             create_whatsapp_window(app.handle())?;
+            if account2_visible {
+                if let Err(e) = create_whatsapp_window_2(app.handle()) {
+                    log_message(app.handle(), LogLevel::Error, format!("Error al crear segunda cuenta al inicio: {e}"));
+                }
+            }
             if floating_bar_visible {
                 create_floating_bar_window(app.handle());
             }
@@ -2439,6 +2486,33 @@ pub fn run() {
                         save_monitoring_icons_visible(app, new_visible);
                         let _ = app.state::<KumaTrayIcon>().0.set_visible(new_visible);
                         let _ = app.state::<ZabbixTrayIcon>().0.set_visible(new_visible);
+                        update_tray_menu(app);
+                    }
+                    "account2" => {
+                        let new_visible = {
+                            let state = app.state::<Account2VisibleState>();
+                            let mut v = state.0.lock().unwrap();
+                            *v = !*v;
+                            *v
+                        };
+                        save_account2_visible(app, new_visible);
+                        if new_visible {
+                            if let Some(win) = app.get_webview_window("whatsapp-web-2") {
+                                let _ = win.set_always_on_top(true);
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                                let _ = win.set_always_on_top(false);
+                            } else if let Err(e) = create_whatsapp_window_2(app) {
+                                log_message(app, LogLevel::Error, format!("Error al crear segunda cuenta: {e}"));
+                            } else if let Some(win) = app.get_webview_window("whatsapp-web-2") {
+                                let _ = win.set_always_on_top(true);
+                                let _ = win.show();
+                                let _ = win.set_focus();
+                                let _ = win.set_always_on_top(false);
+                            }
+                        } else if let Some(win) = app.get_webview_window("whatsapp-web-2") {
+                            let _ = win.hide();
+                        }
                         update_tray_menu(app);
                     }
                     "autostart" => {
