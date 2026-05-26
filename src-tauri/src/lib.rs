@@ -128,7 +128,15 @@ fn show_window(app: &AppHandle) {
         let _ = window.set_always_on_top(true);
         let _ = window.show();
         let _ = window.set_focus();
-        let _ = window.set_always_on_top(false);
+        // Defer always_on_top(false) so the compositor has time to process the
+        // activation before we clear the ABOVE state. Without this delay, GNOME 48+
+        // on Wayland receives all four calls in the same batch and ends up leaving
+        // the window non-activated, which breaks decoration button interaction.
+        let win = window.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(150));
+            let _ = win.set_always_on_top(false);
+        });
     } else {
         log_message(app, LogLevel::Error, "No se encontró la ventana de WhatsApp");
     }
@@ -2569,8 +2577,7 @@ pub fn run() {
                             if window.is_visible().unwrap_or(false) {
                                 let _ = window.hide();
                             } else {
-                                let _ = window.show();
-                                let _ = window.set_focus();
+                                show_window(app);
                             }
                         } else {
                             show_window(app);
