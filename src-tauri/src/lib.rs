@@ -132,20 +132,28 @@ fn show_window(app: &AppHandle) {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(150));
             let _ = win.set_always_on_top(false);
-            // On Ubuntu 26 / WebKitGTK 2.48+, the WebKit GDK sub-window can be
-            // positioned at (0,0) on first map, overlapping the GtkHeaderBar and
-            // making the CSD buttons unresponsive. queue_resize() triggers a GTK
-            // size-allocate cycle that repositions the WebView below the header bar.
+            // On Ubuntu 26 / WebKitGTK 2.48+, showing a previously hidden window
+            // doesn't trigger a configure_notify from the WM, leaving the WebKit
+            // GDK sub-window's input region stale and CSD buttons unresponsive.
+            // Forcing a real 1px resize via the GTK window makes the WM emit a
+            // configure_notify, which causes a full relayout and fixes the regions.
+            // The restore is scheduled via idle_add so it runs in the next GTK
+            // main loop iteration (after the resize has been processed).
             #[cfg(target_os = "linux")]
             {
                 let _ = win.with_webview(|w| {
                     use glib::Cast;
                     use gtk::prelude::{GtkWindowExt, WidgetExt};
                     let widget = w.inner();
-                    widget.queue_resize();
                     if let Some(toplevel) = widget.toplevel() {
                         if let Ok(gtk_win) = toplevel.downcast::<gtk::Window>() {
+                            let (cw, ch) = gtk_win.size();
+                            gtk_win.resize(cw + 1, ch);
                             gtk_win.present();
+                            let gtk_win2 = gtk_win.clone();
+                            glib::idle_add_local_once(move || {
+                                gtk_win2.resize(cw, ch);
+                            });
                         }
                     }
                 });
