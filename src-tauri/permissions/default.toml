@@ -17,10 +17,4 @@ commands.allow = [
   "get_logs",
   "clear_logs",
   "open_logs",
-  "get_uptime_kuma_config",
-  "save_uptime_kuma_config",
-  "get_zabbix_config",
-  "save_zabbix_config",
-  "get_monitoring_status",
-  "open_monitoring_url",
 ]

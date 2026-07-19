@@ -27,7 +27,6 @@ tauri-plugin-process = "2"
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 mime_guess = "2"
-ureq = "2"
 
 # rfd y tauri-plugin-dialog tienen features exclusivos de cada plataforma,
 # así que van en sus respectivas secciones target.
