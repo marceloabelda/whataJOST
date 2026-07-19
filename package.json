@@ -1,7 +1,7 @@
 {
   "name": "whatajost",
   "private": true,
-  "version": "1.1.82",
+  "version": "1.1.83",
   "type": "module",
   "scripts": {
     "dev": "vite",
@@ -10,8 +10,8 @@
     "tauri": "tauri"
   },
   "devDependencies": {
-    "@tauri-apps/cli": "^2.11.2",
-    "vite": "^6.4.2"
+    "@tauri-apps/cli": "^2.11.4",
+    "vite": "^6.4.3"
   },
   "dependencies": {
     "@tauri-apps/plugin-clipboard-manager": "^2.3.2"
