@@ -136,6 +136,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 - **Badge no leídos (lib.rs:933):** `MutationObserver` en `<title>` + `setInterval` cada 2,5 s. Parsea `(N) WhatsApp` del título y llama `update_unread_count` IPC.
 - **Notificaciones (lib.rs:913):** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente.
 - **User agent (lib.rs:369):** La ventana `whatsapp-web` usa un UA de Chrome/Linux para que WhatsApp Web no detecte un navegador desconocido y bloquee el acceso.
+- **Segunda cuenta al inicio (arranque):** Si `account2_visible` está en `true`, `create_whatsapp_window_2` se lanza en un `std::thread::spawn` dentro de `setup()` en vez de llamarse sincrónicamente. Crear el segundo contexto WebKit ahí adentro bloquearía el armado del tray y el registro del atajo global (Win+Alt+W) hasta que termine. Al togglear la cuenta 2 desde el tray en caliente sí se llama sincrónico (ya no está en el path crítico de arranque).
 
 ---
 

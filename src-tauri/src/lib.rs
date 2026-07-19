@@ -1715,9 +1715,15 @@ pub fn run() {
 
             create_whatsapp_window(app.handle())?;
             if account2_visible {
-                if let Err(e) = create_whatsapp_window_2(app.handle()) {
-                    log_message(app.handle(), LogLevel::Error, format!("Error al crear segunda cuenta al inicio: {e}"));
-                }
+                // Diferido a un thread: crear la segunda ventana (nuevo contexto WebKit)
+                // de forma sincrónica acá adentro de setup() retrasa que aparezcan el
+                // tray y el atajo global hasta que termine de inicializarse.
+                let handle2 = app.handle().clone();
+                std::thread::spawn(move || {
+                    if let Err(e) = create_whatsapp_window_2(&handle2) {
+                        log_message(&handle2, LogLevel::Error, format!("Error al crear segunda cuenta al inicio: {e}"));
+                    }
+                });
             }
 
             // Manejar deep link si la app fue lanzada con una URL whatsapp://
