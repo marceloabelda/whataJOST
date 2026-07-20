@@ -257,6 +257,14 @@ La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la 
 - `mime_guess` — detección de MIME type para archivos arrastrados desde el SO
 - `wl-clipboard` (`wl-paste`) / `xclip` — lectura de imágenes del portapapeles del sistema (dependencias `.deb`)
 
+### Parche `tao` — botones de ventana (min/max/cerrar) sin respuesta en Wayland
+
+`Cargo.toml` tiene `[patch.crates-io] tao = { git = "...tao", branch = "dev" }`. Necesario porque tao 0.35.3 (versión publicada en crates.io) tiene un bug de CSD en Wayland ([tauri-apps/tauri#11856](https://github.com/tauri-apps/tauri/issues/11856), [tauri-apps/tao#1046](https://github.com/tauri-apps/tao/issues/1046)): tras ocultar/mostrar la ventana, los botones minimizar/maximizar/cerrar dejan de responder al click (el hover sigue funcionando, y un maximize/restore real —ej. doble-click en la barra— los destraba temporalmente). Reportado en Ubuntu 26/GNOME 48+; puede afectar otras distros con Wayland.
+
+El fix real (revierte el CSD custom que tao había agregado en su PR #979) se mergeó a la rama `dev` de tao el 2026-06-29 ([tao#1218](https://github.com/tauri-apps/tao/pull/1218)) pero **todavía no tiene versión publicada en crates.io** — por eso el patch apunta a la rama en vez de a un número de versión. Se probaron 3 mitigaciones propias antes de encontrar la causa real (ver historial de `show_window` en git log de `lib.rs`); ninguna funcionaba porque el bug estaba en tao, no en nuestro código.
+
+**Cuando tao publique una versión con este fix**: reemplazar el `[patch.crates-io]` por bump normal de versión en las deps de `tauri`, correr `cargo update`, y evaluar si el hack de resize de 1px en `show_window` (lib.rs:96) sigue haciendo falta (probablemente no).
+
 ## Release
 
 Para publicar una nueva versión:

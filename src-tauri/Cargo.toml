@@ -48,3 +48,12 @@ lto = true
 codegen-units = 1
 strip = true
 panic = "abort"
+
+# tao 0.35.3 (crates.io) tiene el bug de CSD en Wayland que deja los botones
+# minimizar/maximizar/cerrar sin responder tras ocultar/mostrar la ventana
+# (tauri-apps/tauri#11856, tauri-apps/tao#1046). El fix real (revierte el CSD
+# custom de tao#979) está mergeado en la rama dev de tao pero aún no se
+# publicó una versión con release en crates.io. Pinneamos a dev hasta que
+# salga esa versión.
+[patch.crates-io]
+tao = { git = "https://github.com/tauri-apps/tao", branch = "dev" }
