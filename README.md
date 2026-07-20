@@ -1,42 +1,30 @@
 # WhataJOST
 
-WhatsApp Web para equipos de infraestructura. Wrapper nativo de WhatsApp Web construido con [Tauri v2](https://v2.tauri.app/), con integraciones de monitoreo para Uptime Kuma y Zabbix.
+Wrapper nativo de WhatsApp Web construido con [Tauri v2](https://v2.tauri.app/).
 
 Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
 ```
                         ┌──────────────────────────────────┐
                         │           WhataJOST              │
-                        │   WhatsApp Web para infra        │
                         └──────────────┬───────────────────┘
                                        │
-           ┌───────────────────────────┼──────────────────────────┐
-           │                           │                          │
-           ▼                           ▼                          ▼
-  ┌─────────────────┐       ┌──────────────────┐       ┌──────────────────┐
-  │  WhatsApp Web   │       │   Uptime Kuma    │       │     Zabbix       │
-  │                 │       │                  │       │                  │
-  │  mensajes       │       │  GET /metrics    │       │  POST JSON-RPC   │
-  │  archivos       │       │  cada 30 s       │       │  cada 30 s       │
-  │  paste/drop     │       │  ● verde / rojo  │       │  ● verde / rojo  │
-  │  notificaciones │       │  notifica cambio │       │  por severidad   │
-  │  deep links     │       │  acknowledged    │       │  acknowledged    │
-  └─────────────────┘       └────────┬─────────┘       └────────┬─────────┘
-                                     └──────────┬───────────────┘
-                                                │
-                                   ┌────────────▼─────────────┐
-                                   │       System Tray        │
-                                   │                          │
-                                   │  [ico] [● UK] [● ZBX] [N]│
-                                   │         ↑       ↑     ↑  │
-                                   │       Uptime  Zabbix badge│
-                                   │       Kuma    probl.  msgs│
-                                   │                          │
-                                   │  ┌──────────────────────┐│
-                                   │  │    Barra flotante    ││
-                                   │  │  ●s1 ●s2 │ ✗prob1   ││
-                                   │  └──────────────────────┘│
-                                   └──────────────────────────┘
+                                       ▼
+                            ┌─────────────────┐
+                            │  WhatsApp Web   │
+                            │                 │
+                            │  mensajes       │
+                            │  archivos       │
+                            │  paste/drop     │
+                            │  notificaciones │
+                            │  deep links     │
+                            └────────┬────────┘
+                                     │
+                          ┌──────────▼─────────┐
+                          │     System Tray     │
+                          │                     │
+                          │   [ico]  [N msgs]   │
+                          └─────────────────────┘
 ```
 
 ---
@@ -57,7 +45,6 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 - Click izquierdo: alterna mostrar/ocultar la ventana
 - Click derecho: menú contextual
 - Badge numérico con mensajes sin leer sobre el ícono
-- Puntos de estado de Uptime Kuma y Zabbix integrados en el ícono del tray
 - Toggle de notificaciones emergentes (persistido en disco)
 - Inicio automático con el sistema (autostart)
 
@@ -82,37 +69,6 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 - Actualización automática al iniciar (en segundo plano, sin interrumpir)
 - Verificación manual desde el menú del tray
 - Reinicio automático post-actualización
-
----
-
-## Monitoreo de infraestructura
-
-### Uptime Kuma
-
-- Polling al endpoint `/metrics` cada 30 segundos
-- Estado visible en el ícono del tray: punto verde (todo ok), rojo (monitor caído), naranja (sin conexión)
-- Submenu en el tray con el estado de cada monitor (`✓/✗ nombre`)
-- Notificación cuando un monitor cambia de estado
-- Configuración desde el menú del tray (URL + API Key)
-
-### Zabbix
-
-- Polling a la API JSON-RPC de Zabbix cada 30 segundos
-- Filtro por severidad configurable (No clasificado / Información / Advertencia / Promedio / Alto / Desastre)
-- Estado visible en el ícono del tray: punto verde (sin problemas), rojo (hay problemas activos), naranja (sin conexión)
-- Submenu en el tray con los problemas activos (`✗ [Severidad] nombre`)
-- Notificación cuando aparece un problema nuevo o se resuelve uno existente
-- Ignorar problemas acknowledged
-- Configuración desde el menú del tray (URL + API Token + severidades)
-
-### Barra flotante de monitoreo
-
-Ventana pequeña siempre visible (420×44 px) que muestra el estado de Uptime Kuma y Zabbix en tiempo real. Se activa desde el menú del tray → **Barra flotante**.
-
-- Pill semitransparente con glassmorphism
-- Puntos coloreados por estado con tooltip al pasar el mouse
-- Se puede arrastrar a cualquier posición de la pantalla
-- Se sincroniza con el estado del tray
 
 ---
 
