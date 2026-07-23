@@ -35,7 +35,7 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
 - Carga en segundo plano, sin pantalla en blanco al abrir
 - User agent Chrome: carga la versión completa de WhatsApp Web
-- Instancia única: una sola ventana abierta a la vez
+- Soporte para dos cuentas de WhatsApp en simultáneo, cada una con su propia sesión (activable desde el menú del tray)
 - Cierre de ventana oculta la app (no la termina), preservando la sesión
 - Versión visible en la barra de título
 - Atajo de teclado global **Ctrl+Shift+W** para mostrar/ocultar la ventana
