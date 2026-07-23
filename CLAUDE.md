@@ -276,14 +276,11 @@ Para publicar una nueva versión:
 
 El script:
 1. Actualiza la versión en `package.json`, `src-tauri/Cargo.toml` y `src-tauri/tauri.conf.json`
-2. Commitea los cambios de versión
-3. Crea y pushea el tag `v<version>`
-4. Ejecuta `cargo update` y `pnpm update`
-5. Buildea con `npx tauri build`
-6. Genera `latest.json` con las firmas de los bundles
-7. Crea la release en GitHub con `gh release create` (incluye `.deb`, `.sig` y `latest.json`)
+2. Ejecuta `cargo update` y `pnpm update`
+3. Commitea los cambios de versión y lock files (`Release v<version>`)
+4. Crea y pushea el tag `v<version>` a GitHub y git.jost.ar
+
+El build y la publicación del release (`.deb`, `.sig`, `latest.json`) los hace GitHub Actions al detectar el tag — no corren localmente. Seguir el progreso en `https://github.com/marceloabelda/whataJOST/actions`.
 
 Requisitos:
 - Estar en la rama `main` sin cambios pendientes
-- Tener `gh` CLI instalado
-- Tener la clave privada del updater en `src-tauri/updater_key`
