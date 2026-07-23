@@ -1,6 +1,10 @@
+<img src="src-tauri/icons/128x128@2x.png" width="96" align="left" alt="Ícono de WhataJOST">
+
 # WhataJOST
 
 Wrapper nativo de WhatsApp Web construido con [Tauri v2](https://v2.tauri.app/).
+
+<br clear="left">
 
 Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
@@ -39,6 +43,7 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 - Cierre de ventana oculta la app (no la termina), preservando la sesión
 - Versión visible en la barra de título
 - Atajo de teclado global **Ctrl+Shift+W** para mostrar/ocultar la ventana
+- Corrección ortográfica nativa en campos de texto (menú contextual de WebKitGTK)
 
 ### Bandeja del sistema (tray)
 
@@ -47,6 +52,7 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 - Badge numérico con mensajes sin leer sobre el ícono
 - Toggle de notificaciones emergentes (persistido en disco)
 - Inicio automático con el sistema (autostart)
+- Visor de logs en tiempo real, accesible desde el menú del tray
 
 ### Notificaciones
 
@@ -74,10 +80,24 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
 ## Instalación
 
-Descargá el `.deb` desde la [página de releases](../../releases/latest) e instalalo con:
+Descargá el instalador para tu sistema desde la [página de releases](../../releases/latest).
+
+### Linux (Debian/Ubuntu)
 
 ```bash
 sudo dpkg -i whatajost_*.deb
 ```
 
 O abrí el archivo `.deb` con el instalador de paquetes de tu escritorio.
+
+### Linux (Fedora/RHEL)
+
+```bash
+sudo rpm -i whatajost-*.rpm
+```
+
+### Windows
+
+Ejecutá el instalador `.msi` descargado.
+
+La app se actualiza sola una vez instalada (ver [Actualizaciones](#actualizaciones)).
