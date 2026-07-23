@@ -81,9 +81,3 @@ sudo dpkg -i whatajost_*.deb
 ```
 
 O abrí el archivo `.deb` con el instalador de paquetes de tu escritorio.
-
----
-
-## Créditos
-
-Ícono: [WhatsApp icon by Icons8](https://icons8.com/icon/42961/whatsapp)
