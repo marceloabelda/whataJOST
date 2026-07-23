@@ -1,3 +1,5 @@
+use std::collections::VecDeque;
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 #[cfg(target_os = "linux")]
 use std::sync::OnceLock;
@@ -49,7 +51,9 @@ struct FileDropResult {
     mime: String,
 }
 
-struct LogState(Arc<Mutex<Vec<LogEntry>>>);
+struct LogState(Arc<Mutex<VecDeque<LogEntry>>>);
+
+const MAX_LOG_ENTRIES: usize = 500;
 
 fn format_timestamp() -> String {
     let secs = SystemTime::now()
@@ -65,11 +69,14 @@ fn format_timestamp() -> String {
 fn log_message(app: &AppHandle, level: LogLevel, message: impl Into<String>) {
     let state = app.state::<LogState>();
     let mut logs = state.0.lock().unwrap();
-    logs.push(LogEntry {
+    logs.push_back(LogEntry {
         timestamp: format_timestamp(),
         level,
         message: message.into(),
     });
+    while logs.len() > MAX_LOG_ENTRIES {
+        logs.pop_front();
+    }
 }
 
 fn handle_deep_link(app: &AppHandle, url: &str) {
@@ -1175,6 +1182,7 @@ struct TrayBadgeState {
 
 struct NotificationPopupState(Mutex<bool>);
 struct Account2VisibleState(Mutex<bool>);
+struct NotificationGenState(AtomicU64);
 
 fn config_path(app: &AppHandle) -> std::path::PathBuf {
     let dir = app.path().app_config_dir().expect("failed to get config dir");
@@ -1502,9 +1510,6 @@ fn url_encode(s: &str) -> String {
 }
 
 fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
-    if let Some(existing) = app.get_webview_window("notification") {
-        let _ = existing.close();
-    }
     let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
         let scale = monitor.scale_factor();
         let size  = monitor.size();
@@ -1517,17 +1522,42 @@ fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
         return;
     };
     let path = format!("notification.html?t={}&b={}", url_encode(title), url_encode(body));
-    let result = WebviewWindowBuilder::new(app, "notification", WebviewUrl::App(path.into()))
+
+    // Cada generación invalida el auto-cierre de la anterior, para poder
+    // reusar la ventana (ver más abajo) sin que un timer viejo la oculte.
+    let gen_state = app.state::<NotificationGenState>();
+    let generation = gen_state.0.fetch_add(1, Ordering::SeqCst) + 1;
+
+    // Reusar la ventana existente si hay una: recargar el contenido de un
+    // WebView ya vivo es mucho más barato que destruir y crear una ventana
+    // nativa nueva por cada mensaje (relevante en ráfagas de notificaciones).
+    if let Some(existing) = app.get_webview_window("notification") {
+        let js = format!(
+            "window.location.replace({});",
+            serde_json::to_string(&path).unwrap()
+        );
+        let _ = existing.eval(&js);
+        let _ = existing.set_position(tauri::LogicalPosition::new(x, y));
+        let _ = existing.show();
+    } else if let Err(e) = WebviewWindowBuilder::new(app, "notification", WebviewUrl::App(path.into()))
         .title("").decorations(false).transparent(true).always_on_top(true)
         .skip_taskbar(true).resizable(false).inner_size(360.0, 100.0)
-        .position(x, y).focused(false).build();
-    if let Ok(win) = result {
-        let win_clone = win.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(Duration::from_millis(5500));
-            let _ = win_clone.close();
-        });
+        .position(x, y).focused(false).build()
+    {
+        log_message(app, LogLevel::Error, format!("Error al crear ventana de notificación: {e}"));
+        return;
     }
+
+    let app2 = app.clone();
+    std::thread::spawn(move || {
+        std::thread::sleep(Duration::from_millis(5500));
+        let gen_state = app2.state::<NotificationGenState>();
+        if gen_state.0.load(Ordering::SeqCst) == generation {
+            if let Some(win) = app2.get_webview_window("notification") {
+                let _ = win.hide();
+            }
+        }
+    });
 }
 
 #[tauri::command]
@@ -1539,7 +1569,7 @@ fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, t
 #[tauri::command]
 fn close_notification(app: AppHandle) {
     if let Some(win) = app.get_webview_window("notification") {
-        let _ = win.close();
+        let _ = win.hide();
     }
 }
 
@@ -1611,13 +1641,13 @@ fn update_unread_count(app: AppHandle, badge_state: State<'_, TrayBadgeState>, c
 fn open_whatsapp(app: AppHandle) {
     show_window(&app);
     if let Some(win) = app.get_webview_window("notification") {
-        let _ = win.close();
+        let _ = win.hide();
     }
 }
 
 #[tauri::command]
 fn get_logs(state: State<'_, LogState>) -> Vec<LogEntry> {
-    state.0.lock().unwrap().clone()
+    state.0.lock().unwrap().iter().cloned().collect()
 }
 
 #[tauri::command]
@@ -1710,7 +1740,8 @@ pub fn run() {
             let account2_visible      = load_account2_visible(app.handle());
             app.manage(NotificationPopupState(Mutex::new(notifications_enabled)));
             app.manage(Account2VisibleState(Mutex::new(account2_visible)));
-            app.manage(LogState(Arc::new(Mutex::new(Vec::new()))));
+            app.manage(NotificationGenState(AtomicU64::new(0)));
+            app.manage(LogState(Arc::new(Mutex::new(VecDeque::new()))));
             log_message(app.handle(), LogLevel::Info, "WhataJOST iniciado");
 
             create_whatsapp_window(app.handle())?;
@@ -1796,38 +1827,7 @@ pub fn run() {
                             let _ = app.autolaunch().enable();
                         }
                     }
-                    "logs" => {
-                        if let Some(existing) = app.get_webview_window("logs") {
-                            let _ = existing.set_focus();
-                        } else {
-                            let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
-                                let scale = monitor.scale_factor();
-                                let size = monitor.size();
-                                let pos = monitor.position();
-                                let logical_w = size.width as f64 / scale;
-                                let logical_h = size.height as f64 / scale;
-                                (
-                                    pos.x as f64 / scale + (logical_w - 650.0) / 2.0,
-                                    pos.y as f64 / scale + (logical_h - 420.0) / 2.0,
-                                )
-                            } else {
-                                (100.0f64, 100.0f64)
-                            };
-                            let result = WebviewWindowBuilder::new(
-                                app,
-                                "logs",
-                                WebviewUrl::App("logs.html".into()),
-                            )
-                            .title("Logs - WhataJOST")
-                            .inner_size(650.0, 420.0)
-                            .position(x, y)
-                            .resizable(true)
-                            .build();
-                            if let Err(e) = result {
-                                log_message(app, LogLevel::Error, format!("Error al abrir ventana de logs: {e}"));
-                            }
-                        }
-                    }
+                    "logs" => open_logs(app.clone()),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray: &TrayIcon, event: TrayIconEvent| {

@@ -134,7 +134,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
   2. **Primera apertura** — `setup()`: lee `std::env::args()`, si encuentra `whatsapp://` lanza un thread que espera 5 s (para que la app cargue completamente) y llama `handle_deep_link`.
 - **Menú contextual (lib.rs:674):** Handlers capture-phase en `contextmenu`/`mousedown`/`mouseup` bloquean los listeners de WhatsApp en campos editables (`isContentEditable`, `INPUT`, `TEXTAREA`) → aparece el menú nativo de WebKitGTK con corrección ortográfica.
 - **Badge no leídos (lib.rs:933):** `MutationObserver` en `<title>` + `setInterval` cada 2,5 s. Parsea `(N) WhatsApp` del título y llama `update_unread_count` IPC.
-- **Notificaciones (lib.rs:913):** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente.
+- **Notificaciones (lib.rs:913):** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente. `show_notification_internal` (Rust) reusa la ventana `notification` entre toasts en vez de destruirla y recrearla: si ya existe, navega su contenido con `window.location.replace(...)` y la reposiciona/muestra; si no, la crea. `close_notification` y `open_whatsapp` la ocultan (`hide`) en vez de cerrarla, para que quede disponible para el próximo toast. Un contador de generación (`NotificationGenState`) evita que el auto-cierre diferido (5,5 s) de un toast viejo oculte uno más nuevo que reusó la misma ventana.
 - **User agent (lib.rs:369):** La ventana `whatsapp-web` usa un UA de Chrome/Linux para que WhatsApp Web no detecte un navegador desconocido y bloquee el acceso.
 - **Segunda cuenta al inicio (arranque):** Si `account2_visible` está en `true`, `create_whatsapp_window_2` se lanza en un `std::thread::spawn` dentro de `setup()` en vez de llamarse sincrónicamente. Crear el segundo contexto WebKit ahí adentro bloquearía el armado del tray y el registro del atajo global (Win+Alt+W) hasta que termine. Al togglear la cuenta 2 desde el tray en caliente sí se llama sincrónico (ya no está en el path crítico de arranque).
 
@@ -221,10 +221,10 @@ Flujo:
 | `read_clipboard_image` | Lee imagen del portapapeles del sistema con `wl-paste` o `xclip` (detecta herramienta disponible con `OnceLock`) |
 | `read_file_for_drop(path)` | Lee un archivo local por path (usado desde el DOM drop handler cuando `dataTransfer.files` está vacío en Linux) |
 | `update_unread_count(count)` | Renderiza badge numérico sobre el ícono de bandeja (pixel art en RGBA, sin librerías de imágenes) |
-| `show_notification(title, body)` | Abre ventana `notification` (HTML transparente, always-on-top) que se auto-cierra a los 5,5 s |
-| `close_notification` | Cierra la ventana de notificación |
-| `open_whatsapp` | Muestra y enfoca la ventana principal |
-| `log_js(level, message)` | Recibe logs del script JS y los agrega al buffer en memoria |
+| `show_notification(title, body)` | Reusa (o crea) la ventana `notification` (HTML transparente, always-on-top) que se auto-oculta a los 5,5 s |
+| `close_notification` | Oculta la ventana de notificación (no la destruye, para reusarla) |
+| `open_whatsapp` | Muestra y enfoca la ventana principal, oculta la notificación |
+| `log_js(level, message)` | Recibe logs del script JS y los agrega al buffer en memoria (capado a `MAX_LOG_ENTRIES` = 500, `VecDeque`) |
 | `get_logs` | Devuelve todos los logs del buffer (usada por `logs.html`) |
 | `clear_logs` | Vacía el buffer de logs |
 | `open_logs` | Abre la ventana del visor de logs centrada en pantalla |
