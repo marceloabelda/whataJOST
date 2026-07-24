@@ -1853,11 +1853,14 @@ pub fn run() {
 
             app.manage(tray);
 
-            // Check for updates in background after app starts
+            // Check for updates in background after app starts, then every 2 hours
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(5));
-                check_for_updates_impl(&handle, true);
+                loop {
+                    check_for_updates_impl(&handle, true);
+                    std::thread::sleep(Duration::from_secs(2 * 60 * 60));
+                }
             });
 
             #[cfg(desktop)]

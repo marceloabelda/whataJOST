@@ -194,7 +194,7 @@ Todas las escrituras usan `modify_config(app, |json| { ... })`: lee el JSON exis
 #### Auto-updater (funciona ✓)
 
 `check_for_updates_impl(app, silent)` — corre en background thread.
-- **Al inicio:** llamado con `silent=true` después de 5 s (para no interferir con la carga inicial de WhatsApp Web).
+- **Al inicio y cada 2 hs:** llamado con `silent=true` en loop — primer chequeo a los 5 s (para no interferir con la carga inicial de WhatsApp Web), después repite cada 2 hs mientras el proceso siga vivo. Necesario porque cerrar la ventana solo la oculta (no mata el proceso, ver "Cierre de ventana → hide" más abajo): sin este loop, un chequeo único al arrancar nunca se repite y una sesión de días/semanas no se entera de versiones nuevas.
 - **Desde el menú:** llamado con `silent=false` (muestra diálogos de error si falla).
 
 Flujo:
