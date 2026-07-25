@@ -62,6 +62,27 @@ El script se inyecta con `WebviewWindowBuilder::initialization_script` (lib.rs:4
 
 ---
 
+#### PDFs — lector externo opcional (experimental, funciona ✓)
+
+**El problema:** algunos PDFs de WhatsApp Web se abren navegando directo a la URL del CDN (no `blob:`), así que ninguno de los interceptores JS de la sección "Descargas" aplica. WebKit2GTK los renderiza con su visor nativo embebido (plugin interno, no DOM). El botón "descargar" de ese visor dispara la señal GObject `download-started` sobre `WebContext`, que por default no tiene destino configurado — según el estado de `xdg-desktop-portal` puede quedar esperando indefinidamente (cuelgue intermitente reportado).
+
+**Toggle en el tray:** "Abrir PDF con lector externo" (`CheckMenuItem` id `toggle_pdf_reader`, `build_tray_menu` lib.rs:~1510). Estado en `PdfExternalReaderState` (lib.rs:1300, `Mutex<bool>`), persistido en `config.json` como `pdf_external_reader` (default `false`) vía `load_pdf_external_reader`/`save_pdf_external_reader` (lib.rs:~1351-1364), mismo patrón que `notifications_enabled`. Deshabilitado por default porque es experimental — se está probando unos días.
+
+**Cuando el toggle está activo**, dentro de `create_whatsapp_window_impl` (lib.rs:1020, bloque `#[cfg(target_os = "linux")]`, corre para las dos ventanas — `whatsapp-web` y `whatsapp-web-2`):
+
+1. **`webview.connect_decide_policy` (lib.rs:1040):** en decisiones de tipo `Response`, hace downcast a `ResponsePolicyDecision` y lee el `mime_type()` de la respuesta. Si es `application/pdf` y el toggle está activo, llama `response_decision.download()` y devuelve `true` (detiene la propagación — WebKit no renderiza su visor nativo). Si no, devuelve `false` y deja el comportamiento default intacto.
+
+2. **`context.connect_download_started` (lib.rs:1068):** conecta tres señales sobre el `Download` que WebKit crea:
+   - `connect_decide_destination`: arma el path en `~/Downloads/WhataJOST/<nombre sugerido>` (vía el helper `whatajost_downloads_dir`, compartido con `save_file`), evita pisar archivos existentes agregando `(1)`, `(2)`, etc., convierte el path a URI con `glib::filename_to_uri` (`set_destination` espera URI, no path plano) y llama `dl.set_destination(&uri)`.
+   - `connect_finished`: recupera el path guardado (compartido entre closures vía `Rc<RefCell<Option<PathBuf>>>`, ya que `download.destination()` devuelve URI) y lo abre con `xdg-open`.
+   - `connect_failed`: loguea el error.
+
+**`whatajost_downloads_dir(app)` (lib.rs:1366):** helper extraído de la lógica que ya tenía `save_file` como fallback sin diálogo — devuelve (y crea si hace falta) `~/Downloads/WhataJOST`. Reusado por ambos.
+
+> **⚠ No tocar:** el orden `decide_destination` → `set_destination` con URI (no path) — `webkit_download_set_destination` espera un URI `file://...`, no una ruta plana. El `Rc<RefCell>` para pasar el path entre `decide_destination` y `finished` — `download.destination()` no es útil ahí porque devuelve la URI ya asignada, no la ruta original que necesitamos para `xdg-open`.
+
+---
+
 #### Paste de imágenes (funciona ✓)
 
 Handler capture-phase en `document` (lib.rs:691). Corre antes que cualquier handler de WhatsApp. Las cuatro ramas se evalúan en orden estricto — no reordenar.
@@ -166,6 +187,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 | Iniciar con el sistema | CheckMenuItem | `tauri_plugin_autostart` enable/disable |
 | Notificaciones emergentes | CheckMenuItem | toggle `NotificationPopupState`, persiste en `config.json` |
 | Segunda cuenta WhatsApp | CheckMenuItem | toggle `Account2VisibleState`, crea/muestra/oculta ventana `whatsapp-web-2` |
+| Abrir PDF con lector externo | CheckMenuItem | toggle `PdfExternalReaderState`, persiste en `config.json` (ver sección "PDFs") |
 | Buscar actualización | MenuItem | `check_for_updates(app)` |
 | Ver logs | MenuItem | abre/enfoca ventana `logs` |
 | Salir | MenuItem | `app.exit(0)` |
@@ -186,6 +208,7 @@ El menú se reconstruye completamente en cada `update_tray_menu()` → `build_tr
 `config.json` en `app.path().app_config_dir()` (Linux: `~/.config/whatajost/config.json`). Campos:
 - `notifications_enabled` (bool, default `true`)
 - `account2_visible` (bool, default `false`)
+- `pdf_external_reader` (bool, default `false`)
 
 Todas las escrituras usan `modify_config(app, |json| { ... })`: lee el JSON existente, aplica el closure, y escribe. Garantiza merge sin pisar otros campos y loggea errores de escritura. No hay migración de schema.
 

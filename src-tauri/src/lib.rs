@@ -1017,6 +1017,121 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
         });
     }
 
+    // Force PDFs to open with an external reader instead of WebKit's native embedded
+    // viewer when the tray toggle is enabled. WhatsApp Web navigates directly to the
+    // CDN URL for PDFs (not blob:), so none of the JS blob interceptors apply — WebKit
+    // renders it with its internal PDF plugin, whose own "download" button fires the
+    // GObject `download-started` signal with no destination configured, which can hang
+    // indefinitely depending on xdg-desktop-portal state. Intercepting decide-policy for
+    // application/pdf responses forces a download instead of the native viewer.
+    #[cfg(target_os = "linux")]
+    {
+        let app_pdf = window.app_handle().clone();
+        let _ = window.with_webview(move |w| {
+            use glib::Cast;
+            use webkit2gtk::{
+                Download, DownloadExt, PolicyDecisionExt, PolicyDecisionType,
+                ResponsePolicyDecision, ResponsePolicyDecisionExt, URIResponseExt,
+            };
+
+            let webview = w.inner();
+
+            let app_policy = app_pdf.clone();
+            webview.connect_decide_policy(move |_wv, decision, decision_type| {
+                if decision_type != PolicyDecisionType::Response {
+                    return false;
+                }
+                let enabled = *app_policy.state::<PdfExternalReaderState>().0.lock().unwrap();
+                if !enabled {
+                    return false;
+                }
+                let Some(response_decision) = decision.downcast_ref::<ResponsePolicyDecision>() else {
+                    return false;
+                };
+                let Some(response) = response_decision.response() else {
+                    return false;
+                };
+                let is_pdf = response
+                    .mime_type()
+                    .map(|m| m == "application/pdf")
+                    .unwrap_or(false);
+                if is_pdf {
+                    response_decision.download();
+                    true
+                } else {
+                    false
+                }
+            });
+
+            if let Some(context) = webview.context() {
+                let app_dl = app_pdf.clone();
+                context.connect_download_started(move |_ctx, download: &Download| {
+                    let saved_path: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>> =
+                        std::rc::Rc::new(std::cell::RefCell::new(None));
+
+                    let app_dd = app_dl.clone();
+                    let saved_path_dd = saved_path.clone();
+                    download.connect_decide_destination(move |dl, suggested_filename| {
+                        let dir = match whatajost_downloads_dir(&app_dd) {
+                            Ok(d) => d,
+                            Err(e) => {
+                                log_message(&app_dd, LogLevel::Error, format!("PDF download: {e}"));
+                                return false;
+                            }
+                        };
+                        let mut path = dir.join(suggested_filename);
+                        if path.exists() {
+                            let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+                            let ext = path.extension().map(|s| s.to_string_lossy().into_owned());
+                            let mut n = 1;
+                            loop {
+                                let candidate_name = match &ext {
+                                    Some(e) => format!("{stem} ({n}).{e}"),
+                                    None => format!("{stem} ({n})"),
+                                };
+                                let candidate = dir.join(candidate_name);
+                                if !candidate.exists() {
+                                    path = candidate;
+                                    break;
+                                }
+                                n += 1;
+                            }
+                        }
+                        let uri = match glib::filename_to_uri(&path, None) {
+                            Ok(u) => u,
+                            Err(e) => {
+                                log_message(&app_dd, LogLevel::Error, format!("PDF download: URI inválida: {e}"));
+                                return false;
+                            }
+                        };
+                        *saved_path_dd.borrow_mut() = Some(path);
+                        dl.set_destination(&uri);
+                        true
+                    });
+
+                    let app_fin = app_dl.clone();
+                    let saved_path_fin = saved_path.clone();
+                    download.connect_finished(move |_dl| {
+                        if let Some(path) = saved_path_fin.borrow_mut().take() {
+                            log_message(&app_fin, LogLevel::Info, format!("PDF descargado, abriendo con lector externo: {}", path.display()));
+                            let _ = std::process::Command::new("xdg-open")
+                                .arg(&path)
+                                .stdin(std::process::Stdio::null())
+                                .stdout(std::process::Stdio::null())
+                                .stderr(std::process::Stdio::null())
+                                .spawn();
+                        }
+                    });
+
+                    let app_fail = app_dl.clone();
+                    download.connect_failed(move |_dl, e| {
+                        log_message(&app_fail, LogLevel::Error, format!("PDF download falló: {e}"));
+                    });
+                });
+            }
+        });
+    }
+
     // Intercept file drops at the GTK widget level. On Linux/Wayland, WebKit2GTK
     // handles DnD internally before DOM events or Tauri's DragDropEvent can fire.
     // Connecting to drag-data-received on the underlying GtkWidget bypasses WebKit's
@@ -1182,6 +1297,7 @@ struct TrayBadgeState {
 
 struct NotificationPopupState(Mutex<bool>);
 struct Account2VisibleState(Mutex<bool>);
+struct PdfExternalReaderState(Mutex<bool>);
 struct NotificationGenState(AtomicU64);
 
 fn config_path(app: &AppHandle) -> std::path::PathBuf {
@@ -1230,6 +1346,31 @@ fn save_account2_visible(app: &AppHandle, visible: bool) {
     modify_config(app, |json| {
         json["account2_visible"] = serde_json::Value::Bool(visible);
     });
+}
+
+fn load_pdf_external_reader(app: &AppHandle) -> bool {
+    let path = config_path(app);
+    std::fs::read_to_string(&path)
+        .ok()
+        .and_then(|s| serde_json::from_str::<serde_json::Value>(&s).ok())
+        .and_then(|v| v.get("pdf_external_reader").and_then(|e| e.as_bool()))
+        .unwrap_or(false)
+}
+
+fn save_pdf_external_reader(app: &AppHandle, enabled: bool) {
+    modify_config(app, |json| {
+        json["pdf_external_reader"] = serde_json::Value::Bool(enabled);
+    });
+}
+
+fn whatajost_downloads_dir(app: &AppHandle) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .download_dir()
+        .map_err(|e| format!("Error al obtener directorio de descargas: {e}"))?
+        .join("WhataJOST");
+    std::fs::create_dir_all(&dir).map_err(|e| format!("Error al crear directorio: {e}"))?;
+    Ok(dir)
 }
 
 // --- tray badge rendering ---
@@ -1360,17 +1501,19 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let autostart_enabled     = app.autolaunch().is_enabled().unwrap_or(false);
     let notifications_enabled = *app.state::<NotificationPopupState>().0.lock().unwrap();
     let account2_visible      = *app.state::<Account2VisibleState>().0.lock().unwrap();
+    let pdf_external_reader   = *app.state::<PdfExternalReaderState>().0.lock().unwrap();
 
     let show_item      = MenuItem::with_id(app, "show",          "Abrir WhatsApp",          true, None::<&str>)?;
     let autostart_item = CheckMenuItem::with_id(app, "autostart","Iniciar con el sistema",   true, autostart_enabled,     None::<&str>)?;
     let notify_item    = CheckMenuItem::with_id(app, "toggle_notify","Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
     let account2_item  = CheckMenuItem::with_id(app, "account2", "Segunda cuenta WhatsApp",  true, account2_visible, None::<&str>)?;
+    let pdf_reader_item = CheckMenuItem::with_id(app, "toggle_pdf_reader", "Abrir PDF con lector externo", true, pdf_external_reader, None::<&str>)?;
     let update_item    = MenuItem::with_id(app, "update",         "Buscar actualización",    true, None::<&str>)?;
     let logs_item      = MenuItem::with_id(app, "logs",           "Ver logs",                true, None::<&str>)?;
     let quit_item      = MenuItem::with_id(app, "quit",           "Salir",                   true, None::<&str>)?;
 
     let items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
-        &show_item, &autostart_item, &notify_item, &account2_item, &update_item, &logs_item, &quit_item,
+        &show_item, &autostart_item, &notify_item, &account2_item, &pdf_reader_item, &update_item, &logs_item, &quit_item,
     ];
     Menu::with_items(app, &items)
 }
@@ -1600,19 +1743,10 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
             Ok(path_str)
         }
         None => {
-            let dir = app.path().download_dir()
-                .map_err(|e| {
-                    let msg = format!("Error al obtener directorio de descargas: {e}");
-                    log_message(&app, LogLevel::Error, &msg);
-                    msg
-                })?;
-            let subdir = dir.join("WhataJOST");
-            std::fs::create_dir_all(&subdir)
-                .map_err(|e| {
-                    let msg = format!("Error al crear directorio: {e}");
-                    log_message(&app, LogLevel::Error, &msg);
-                    msg
-                })?;
+            let subdir = whatajost_downloads_dir(&app).map_err(|e| {
+                log_message(&app, LogLevel::Error, &e);
+                e
+            })?;
             let fallback = subdir.join(&file_name);
             std::fs::write(&fallback, &bytes)
                 .map_err(|e| {
@@ -1738,8 +1872,10 @@ pub fn run() {
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());
             let account2_visible      = load_account2_visible(app.handle());
+            let pdf_external_reader   = load_pdf_external_reader(app.handle());
             app.manage(NotificationPopupState(Mutex::new(notifications_enabled)));
             app.manage(Account2VisibleState(Mutex::new(account2_visible)));
+            app.manage(PdfExternalReaderState(Mutex::new(pdf_external_reader)));
             app.manage(NotificationGenState(AtomicU64::new(0)));
             app.manage(LogState(Arc::new(Mutex::new(VecDeque::new()))));
             log_message(app.handle(), LogLevel::Info, "WhataJOST iniciado");
@@ -1826,6 +1962,12 @@ pub fn run() {
                         } else {
                             let _ = app.autolaunch().enable();
                         }
+                    }
+                    "toggle_pdf_reader" => {
+                        let state = app.state::<PdfExternalReaderState>();
+                        let mut enabled = state.0.lock().unwrap();
+                        *enabled = !*enabled;
+                        save_pdf_external_reader(app, *enabled);
                     }
                     "logs" => open_logs(app.clone()),
                     _ => {}
