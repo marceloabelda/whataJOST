@@ -62,24 +62,20 @@ El script se inyecta con `WebviewWindowBuilder::initialization_script` (lib.rs:4
 
 ---
 
-#### PDFs — lector externo opcional (experimental, funciona ✓)
+#### PDFs — descarga con visor externo opcional (funciona ✓)
 
-**El problema:** algunos PDFs de WhatsApp Web se abren navegando directo a la URL del CDN (no `blob:`), así que ninguno de los interceptores JS de la sección "Descargas" aplica. WebKit2GTK los renderiza con su visor nativo embebido (plugin interno, no DOM). El botón "descargar" de ese visor dispara la señal GObject `download-started` sobre `WebContext`, que por default no tiene destino configurado — según el estado de `xdg-desktop-portal` puede quedar esperando indefinidamente (cuelgue intermitente reportado).
+**El problema original:** clickear "descargar" dentro del visor de PDF de WhatsApp Web podía colgar la app intermitentemente. La hipótesis inicial (visor nativo embebido de WebKit2GTK interceptado a nivel `decide-policy`/`download-started`) resultó **incorrecta** tras inspeccionar los logs reales: WhatsApp Web no le pasa el PDF a WebKit como una respuesta HTTP `application/pdf` — abre su propio visor, una app HTML/JS servida en un iframe sandbox (`https://webtp.whatsapp.net/pdf-viewer`, `mime=text/html`). El botón "Descargar" de ese visor **no vive dentro del iframe**: es parte del DOM del frame top (`web.whatsapp.com`), y su click ya caía en el mecanismo de blobs existente (sección "Descargas" más arriba: `HTMLAnchorElement.prototype.click` override → `downloadBlob` → `saveBlob` → IPC `save_file`). El cuelgue original no tenía relación con el visor nativo de WebKit; el fix real fue mucho más simple de lo que se pensó al principio.
 
-**Toggle en el tray:** "Abrir PDF con lector externo" (`CheckMenuItem` id `toggle_pdf_reader`, `build_tray_menu` lib.rs:~1510). Estado en `PdfExternalReaderState` (lib.rs:1300, `Mutex<bool>`), persistido en `config.json` como `pdf_external_reader` (default `false`) vía `load_pdf_external_reader`/`save_pdf_external_reader` (lib.rs:~1351-1364), mismo patrón que `notifications_enabled`. Deshabilitado por default porque es experimental — se está probando unos días.
+**Toggle en el tray:** "Descargar PDF abre con visor externo" (`CheckMenuItem` id `toggle_pdf_reader`, `build_tray_menu` lib.rs:~1418). Estado en `PdfExternalReaderState` (lib.rs:1185, `Mutex<bool>`), persistido en `config.json` como `pdf_external_reader` (default `false`) vía `load_pdf_external_reader`/`save_pdf_external_reader` (lib.rs:~1236-1247).
 
-**Cuando el toggle está activo**, dentro de `create_whatsapp_window_impl` (lib.rs:1020, bloque `#[cfg(target_os = "linux")]`, corre para las dos ventanas — `whatsapp-web` y `whatsapp-web-2`):
+**Mecanismo (todo dentro de `save_file`, lib.rs:~1628):** el flujo de blobs ya existente termina siempre invocando la IPC `save_file(data, file_name)`, sin importar si el blob viene de un documento, una imagen o cualquier otro archivo. Al principio de `save_file`, si `file_name` termina en `.pdf` (case-insensitive) **y** el toggle está activo:
+1. Escribe los bytes directo en `~/Downloads/WhataJOST/<nombre>` (vía `whatajost_downloads_dir`, helper compartido con el fallback normal de `save_file`), evitando pisar archivos existentes con `unique_path` (agrega `(1)`, `(2)`, etc.).
+2. Abre el archivo con `opener().open_path(...)` (con fallback a `xdg-open` en Linux si falla, mismo patrón que "Links externos").
+3. Devuelve el path sin pasar por `rfd::FileDialog` — no aparece ningún diálogo.
 
-1. **`webview.connect_decide_policy` (lib.rs:1040):** en decisiones de tipo `Response`, hace downcast a `ResponsePolicyDecision` y lee el `mime_type()` de la respuesta. Si es `application/pdf` y el toggle está activo, llama `response_decision.download()` y devuelve `true` (detiene la propagación — WebKit no renderiza su visor nativo). Si no, devuelve `false` y deja el comportamiento default intacto.
+Si el toggle está desactivado, o el archivo no es un PDF, `save_file` sigue su comportamiento normal (diálogo de guardado / fallback a `~/Downloads/WhataJOST` si no hay diálogo disponible).
 
-2. **`context.connect_download_started` (lib.rs:1068):** conecta tres señales sobre el `Download` que WebKit crea:
-   - `connect_decide_destination`: arma el path en `~/Downloads/WhataJOST/<nombre sugerido>` (vía el helper `whatajost_downloads_dir`, compartido con `save_file`), evita pisar archivos existentes agregando `(1)`, `(2)`, etc., convierte el path a URI con `glib::filename_to_uri` (`set_destination` espera URI, no path plano) y llama `dl.set_destination(&uri)`.
-   - `connect_finished`: recupera el path guardado (compartido entre closures vía `Rc<RefCell<Option<PathBuf>>>`, ya que `download.destination()` devuelve URI) y lo abre con `xdg-open`.
-   - `connect_failed`: loguea el error.
-
-**`whatajost_downloads_dir(app)` (lib.rs:1366):** helper extraído de la lógica que ya tenía `save_file` como fallback sin diálogo — devuelve (y crea si hace falta) `~/Downloads/WhataJOST`. Reusado por ambos.
-
-> **⚠ No tocar:** el orden `decide_destination` → `set_destination` con URI (no path) — `webkit_download_set_destination` espera un URI `file://...`, no una ruta plana. El `Rc<RefCell>` para pasar el path entre `decide_destination` y `finished` — `download.destination()` no es útil ahí porque devuelve la URI ya asignada, no la ruta original que necesitamos para `xdg-open`.
+**La vista previa embebida del PDF (el iframe `pdf-viewer`) no se ve afectada** — sigue mostrándose igual que antes. El toggle solo cambia qué pasa al clickear "Descargar" dentro de ese visor. Se evaluó auto-clickear el botón de descarga (identificado como `[aria-label="Descargar"]`, con ícono `data-icon="ic-download"`) para saltear el preview por completo, pero se descartó: dependería de texto/atributos internos de la UI de WhatsApp que pueden cambiar sin aviso.
 
 ---
 
@@ -187,7 +183,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 | Iniciar con el sistema | CheckMenuItem | `tauri_plugin_autostart` enable/disable |
 | Notificaciones emergentes | CheckMenuItem | toggle `NotificationPopupState`, persiste en `config.json` |
 | Segunda cuenta WhatsApp | CheckMenuItem | toggle `Account2VisibleState`, crea/muestra/oculta ventana `whatsapp-web-2` |
-| Abrir PDF con lector externo | CheckMenuItem | toggle `PdfExternalReaderState`, persiste en `config.json` (ver sección "PDFs") |
+| Descargar PDF abre con visor externo | CheckMenuItem | toggle `PdfExternalReaderState`, persiste en `config.json` (ver sección "PDFs") |
 | Buscar actualización | MenuItem | `check_for_updates(app)` |
 | Ver logs | MenuItem | abre/enfoca ventana `logs` |
 | Salir | MenuItem | `app.exit(0)` |

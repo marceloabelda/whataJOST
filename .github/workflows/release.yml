@@ -49,7 +49,11 @@ jobs:
             libwebkit2gtk-4.1-dev \
             libappindicator3-dev \
             librsvg2-dev \
-            patchelf
+            patchelf \
+            libfuse2
+          # libfuse2: linuxdeploy/appimagetool (que tauri-bundler descarga para armar
+          # el AppImage) corren como AppImage y necesitan FUSE2 para montarse; Ubuntu
+          # 22.04+ no lo trae instalado por default.
 
       - run: pnpm install
 
@@ -111,6 +115,8 @@ jobs:
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/deb/*.deb.sig
             src-tauri/target/release/bundle/rpm/*.rpm
+            src-tauri/target/release/bundle/appimage/*.AppImage
+            src-tauri/target/release/bundle/appimage/*.AppImage.sig
             src-tauri/target/release/bundle/msi/*.msi
             src-tauri/target/release/bundle/msi/*.msi.sig
           if-no-files-found: ignore
@@ -178,6 +184,8 @@ jobs:
             artifacts/**/*.deb
             artifacts/**/*.deb.sig
             artifacts/**/*.rpm
+            artifacts/**/*.AppImage
+            artifacts/**/*.AppImage.sig
             artifacts/**/*.msi
             artifacts/**/*.msi.sig
             latest.json

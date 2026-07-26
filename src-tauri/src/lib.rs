@@ -142,6 +142,52 @@ fn show_window(app: &AppHandle) {
     }
 }
 
+fn show_window_2(app: &AppHandle) {
+    if let Some(window) = app.get_webview_window("whatsapp-web-2") {
+        let _ = window.set_always_on_top(true);
+        let _ = window.show();
+        let _ = window.set_focus();
+        let _ = window.set_always_on_top(false);
+    }
+}
+
+fn ui_lang_es() -> bool {
+    #[cfg(target_os = "linux")]
+    let locale = glib::language_names().first().map(|s| s.to_string()).unwrap_or_default();
+    #[cfg(not(target_os = "linux"))]
+    let locale = std::env::var("LANG").unwrap_or_default();
+    locale.to_lowercase().starts_with("es")
+}
+
+fn t(key: &'static str) -> &'static str {
+    let es = ui_lang_es();
+    match (key, es) {
+        ("tray_open", true) => "Abrir WhatsApp",
+        ("tray_open", false) => "Open WhatsApp",
+        ("tray_open2", true) => "Abrir WhatsApp (2da cuenta)",
+        ("tray_open2", false) => "Open WhatsApp (2nd account)",
+        ("tray_autostart", true) => "Iniciar con el sistema",
+        ("tray_autostart", false) => "Start with system",
+        ("tray_notify", true) => "Notificaciones emergentes",
+        ("tray_notify", false) => "Popup notifications",
+        ("tray_account2", true) => "Segunda cuenta WhatsApp",
+        ("tray_account2", false) => "Second WhatsApp account",
+        ("tray_pdf_reader", true) => "Descargar PDF abre con visor externo",
+        ("tray_pdf_reader", false) => "Downloaded PDFs open in external viewer",
+        ("tray_update", true) => "Buscar actualización",
+        ("tray_update", false) => "Check for updates",
+        ("tray_logs", true) => "Ver logs",
+        ("tray_logs", false) => "View logs",
+        ("tray_quit", true) => "Salir",
+        ("tray_quit", false) => "Quit",
+        ("dlg_title_update", true) => "whataJOST - Actualización",
+        ("dlg_title_update", false) => "whataJOST - Update",
+        ("dlg_title_error", true) => "whataJOST - Error",
+        ("dlg_title_error", false) => "whataJOST - Error",
+        _ => key,
+    }
+}
+
 fn check_for_updates(app: &AppHandle) {
     check_for_updates_impl(app, false);
 }
@@ -154,9 +200,10 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                 Ok(u) => u,
                 Err(e) => {
                     if !silent {
+                        let es = ui_lang_es();
                         handle
                             .dialog()
-                            .message(format!("Error al iniciar el updater: {e}"))
+                            .message(if es { format!("Error al iniciar el updater: {e}") } else { format!("Failed to start the updater: {e}") })
                             .title("whataJOST")
                             .kind(MessageDialogKind::Error)
                             .buttons(MessageDialogButtons::Ok)
@@ -170,9 +217,10 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                 Ok(Some(u)) => u,
                 Ok(None) => {
                     if !silent {
+                        let es = ui_lang_es();
                         handle
                             .dialog()
-                            .message("Ya tenés la última versión.")
+                            .message(if es { "Ya tenés la última versión." } else { "You already have the latest version." })
                             .title("whataJOST")
                             .kind(MessageDialogKind::Info)
                             .buttons(MessageDialogButtons::Ok)
@@ -182,9 +230,10 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                 }
                 Err(e) => {
                     if !silent {
+                        let es = ui_lang_es();
                         handle
                             .dialog()
-                            .message(format!("Error al buscar actualizaciones: {e}"))
+                            .message(if es { format!("Error al buscar actualizaciones: {e}") } else { format!("Failed to check for updates: {e}") })
                             .title("whataJOST")
                             .kind(MessageDialogKind::Error)
                             .buttons(MessageDialogButtons::Ok)
@@ -195,13 +244,16 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
             };
 
             let version = update.version.clone();
+            let es = ui_lang_es();
 
             handle
                 .dialog()
-                .message(format!(
-                    "Nueva versión disponible: {version}\n\n¿Querés actualizar ahora?"
-                ))
-                .title("whataJOST - Actualización")
+                .message(if es {
+                    format!("Nueva versión disponible: {version}\n\n¿Querés actualizar ahora?")
+                } else {
+                    format!("New version available: {version}\n\nDo you want to update now?")
+                })
+                .title(t("dlg_title_update"))
                 .kind(MessageDialogKind::Info)
                 .buttons(MessageDialogButtons::OkCancel)
                 .show(move |result| {
@@ -213,8 +265,8 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                 Ok(b) => b,
                                 Err(e) => {
                                     h.dialog()
-                                        .message(format!("Error al descargar: {e}"))
-                                        .title("whataJOST - Error")
+                                        .message(if es { format!("Error al descargar: {e}") } else { format!("Failed to download: {e}") })
+                                        .title(t("dlg_title_error"))
                                         .kind(MessageDialogKind::Error)
                                         .buttons(MessageDialogButtons::Ok)
                                         .show(|_| {});
@@ -235,8 +287,8 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                             ));
                             if let Err(e) = std::fs::write(&tmp, &bytes) {
                                 h.dialog()
-                                    .message(format!("Error al guardar el paquete: {e}"))
-                                    .title("whataJOST - Error")
+                                    .message(if es { format!("Error al guardar el paquete: {e}") } else { format!("Failed to save the package: {e}") })
+                                    .title(t("dlg_title_error"))
                                     .kind(MessageDialogKind::Error)
                                     .buttons(MessageDialogButtons::Ok)
                                     .show(|_| {});
@@ -266,8 +318,9 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
 
                                 // Intento 3: zenity para pedir contraseña + sudo -S
                                 if failed(&result) {
+                                    let password_title = if es { "whataJOST - Instalar actualización" } else { "whataJOST - Install update" };
                                     let password = std::process::Command::new("zenity")
-                                        .args(["--password", "--title", "whataJOST - Instalar actualización"])
+                                        .args(["--password", "--title", password_title])
                                         .output()
                                         .ok()
                                         .and_then(|out| String::from_utf8(out.stdout).ok())
@@ -292,11 +345,18 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                         .arg(&tmp)
                                         .spawn();
                                     h.dialog()
-                                        .message(format!(
-                                            "Se abrió el instalador del sistema con el paquete.\nCompletá la instalación manualmente y reiniciá whataJOST.\n\nArchivo: {}",
-                                            tmp.display()
-                                        ))
-                                        .title("whataJOST - Actualización")
+                                        .message(if es {
+                                            format!(
+                                                "Se abrió el instalador del sistema con el paquete.\nCompletá la instalación manualmente y reiniciá whataJOST.\n\nArchivo: {}",
+                                                tmp.display()
+                                            )
+                                        } else {
+                                            format!(
+                                                "The system installer was opened with the package.\nComplete the installation manually and restart whataJOST.\n\nFile: {}",
+                                                tmp.display()
+                                            )
+                                        })
+                                        .title(t("dlg_title_update"))
                                         .kind(MessageDialogKind::Info)
                                         .buttons(MessageDialogButtons::Ok)
                                         .show(|_| {});
@@ -320,19 +380,20 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                 }
                                 Ok(status) => {
                                     h.dialog()
-                                        .message(format!(
-                                            "La instalación terminó con código: {}",
-                                            status.code().unwrap_or(-1)
-                                        ))
-                                        .title("whataJOST - Error")
+                                        .message(if es {
+                                            format!("La instalación terminó con código: {}", status.code().unwrap_or(-1))
+                                        } else {
+                                            format!("The installation finished with code: {}", status.code().unwrap_or(-1))
+                                        })
+                                        .title(t("dlg_title_error"))
                                         .kind(MessageDialogKind::Error)
                                         .buttons(MessageDialogButtons::Ok)
                                         .show(|_| {});
                                 }
                                 Err(e) => {
                                     h.dialog()
-                                        .message(format!("Error al instalar: {e}"))
-                                        .title("whataJOST - Error")
+                                        .message(if es { format!("Error al instalar: {e}") } else { format!("Failed to install: {e}") })
+                                        .title(t("dlg_title_error"))
                                         .kind(MessageDialogKind::Error)
                                         .buttons(MessageDialogButtons::Ok)
                                         .show(|_| {});
@@ -1014,121 +1075,15 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
             if let Some(settings) = webview.settings() {
                 settings.set_enable_developer_extras(true);
             }
-        });
-    }
-
-    // Force PDFs to open with an external reader instead of WebKit's native embedded
-    // viewer when the tray toggle is enabled. WhatsApp Web navigates directly to the
-    // CDN URL for PDFs (not blob:), so none of the JS blob interceptors apply — WebKit
-    // renders it with its internal PDF plugin, whose own "download" button fires the
-    // GObject `download-started` signal with no destination configured, which can hang
-    // indefinitely depending on xdg-desktop-portal state. Intercepting decide-policy for
-    // application/pdf responses forces a download instead of the native viewer.
-    #[cfg(target_os = "linux")]
-    {
-        let app_pdf = window.app_handle().clone();
-        let _ = window.with_webview(move |w| {
-            use glib::Cast;
-            use webkit2gtk::{
-                Download, DownloadExt, PolicyDecisionExt, PolicyDecisionType,
-                ResponsePolicyDecision, ResponsePolicyDecisionExt, URIResponseExt,
-            };
-
-            let webview = w.inner();
-
-            let app_policy = app_pdf.clone();
-            webview.connect_decide_policy(move |_wv, decision, decision_type| {
-                if decision_type != PolicyDecisionType::Response {
-                    return false;
-                }
-                let enabled = *app_policy.state::<PdfExternalReaderState>().0.lock().unwrap();
-                if !enabled {
-                    return false;
-                }
-                let Some(response_decision) = decision.downcast_ref::<ResponsePolicyDecision>() else {
-                    return false;
-                };
-                let Some(response) = response_decision.response() else {
-                    return false;
-                };
-                let is_pdf = response
-                    .mime_type()
-                    .map(|m| m == "application/pdf")
-                    .unwrap_or(false);
-                if is_pdf {
-                    response_decision.download();
-                    true
-                } else {
-                    false
-                }
+            // Sin esto, WebKit deniega por default cualquier permission-request
+            // (navigator.clipboard.write, getUserMedia para llamadas, etc.) porque wry
+            // no conecta esta señal. "Copiar imagen" en WhatsApp Web usa el Clipboard API
+            // y fallaba silenciosamente (la imagen nunca llegaba al portapapeles del SO).
+            use webkit2gtk::PermissionRequestExt;
+            webview.connect_permission_request(|_wv, request| {
+                request.allow();
+                true
             });
-
-            if let Some(context) = webview.context() {
-                let app_dl = app_pdf.clone();
-                context.connect_download_started(move |_ctx, download: &Download| {
-                    let saved_path: std::rc::Rc<std::cell::RefCell<Option<std::path::PathBuf>>> =
-                        std::rc::Rc::new(std::cell::RefCell::new(None));
-
-                    let app_dd = app_dl.clone();
-                    let saved_path_dd = saved_path.clone();
-                    download.connect_decide_destination(move |dl, suggested_filename| {
-                        let dir = match whatajost_downloads_dir(&app_dd) {
-                            Ok(d) => d,
-                            Err(e) => {
-                                log_message(&app_dd, LogLevel::Error, format!("PDF download: {e}"));
-                                return false;
-                            }
-                        };
-                        let mut path = dir.join(suggested_filename);
-                        if path.exists() {
-                            let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
-                            let ext = path.extension().map(|s| s.to_string_lossy().into_owned());
-                            let mut n = 1;
-                            loop {
-                                let candidate_name = match &ext {
-                                    Some(e) => format!("{stem} ({n}).{e}"),
-                                    None => format!("{stem} ({n})"),
-                                };
-                                let candidate = dir.join(candidate_name);
-                                if !candidate.exists() {
-                                    path = candidate;
-                                    break;
-                                }
-                                n += 1;
-                            }
-                        }
-                        let uri = match glib::filename_to_uri(&path, None) {
-                            Ok(u) => u,
-                            Err(e) => {
-                                log_message(&app_dd, LogLevel::Error, format!("PDF download: URI inválida: {e}"));
-                                return false;
-                            }
-                        };
-                        *saved_path_dd.borrow_mut() = Some(path);
-                        dl.set_destination(&uri);
-                        true
-                    });
-
-                    let app_fin = app_dl.clone();
-                    let saved_path_fin = saved_path.clone();
-                    download.connect_finished(move |_dl| {
-                        if let Some(path) = saved_path_fin.borrow_mut().take() {
-                            log_message(&app_fin, LogLevel::Info, format!("PDF descargado, abriendo con lector externo: {}", path.display()));
-                            let _ = std::process::Command::new("xdg-open")
-                                .arg(&path)
-                                .stdin(std::process::Stdio::null())
-                                .stdout(std::process::Stdio::null())
-                                .stderr(std::process::Stdio::null())
-                                .spawn();
-                        }
-                    });
-
-                    let app_fail = app_dl.clone();
-                    download.connect_failed(move |_dl, e| {
-                        log_message(&app_fail, LogLevel::Error, format!("PDF download falló: {e}"));
-                    });
-                });
-            }
         });
     }
 
@@ -1373,6 +1328,29 @@ fn whatajost_downloads_dir(app: &AppHandle) -> Result<std::path::PathBuf, String
     Ok(dir)
 }
 
+fn unique_path(dir: &std::path::Path, file_name: &str) -> std::path::PathBuf {
+    let mut path = dir.join(file_name);
+    if !path.exists() {
+        return path;
+    }
+    let stem = path.file_stem().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let ext = path.extension().map(|s| s.to_string_lossy().into_owned());
+    let mut n = 1;
+    loop {
+        let candidate_name = match &ext {
+            Some(e) => format!("{stem} ({n}).{e}"),
+            None => format!("{stem} ({n})"),
+        };
+        let candidate = dir.join(candidate_name);
+        if !candidate.exists() {
+            path = candidate;
+            break;
+        }
+        n += 1;
+    }
+    path
+}
+
 // --- tray badge rendering ---
 
 const DIGIT_PATTERNS: [[u8; 7]; 10] = [
@@ -1503,17 +1481,18 @@ fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let account2_visible      = *app.state::<Account2VisibleState>().0.lock().unwrap();
     let pdf_external_reader   = *app.state::<PdfExternalReaderState>().0.lock().unwrap();
 
-    let show_item      = MenuItem::with_id(app, "show",          "Abrir WhatsApp",          true, None::<&str>)?;
-    let autostart_item = CheckMenuItem::with_id(app, "autostart","Iniciar con el sistema",   true, autostart_enabled,     None::<&str>)?;
-    let notify_item    = CheckMenuItem::with_id(app, "toggle_notify","Notificaciones emergentes", true, notifications_enabled, None::<&str>)?;
-    let account2_item  = CheckMenuItem::with_id(app, "account2", "Segunda cuenta WhatsApp",  true, account2_visible, None::<&str>)?;
-    let pdf_reader_item = CheckMenuItem::with_id(app, "toggle_pdf_reader", "Abrir PDF con lector externo", true, pdf_external_reader, None::<&str>)?;
-    let update_item    = MenuItem::with_id(app, "update",         "Buscar actualización",    true, None::<&str>)?;
-    let logs_item      = MenuItem::with_id(app, "logs",           "Ver logs",                true, None::<&str>)?;
-    let quit_item      = MenuItem::with_id(app, "quit",           "Salir",                   true, None::<&str>)?;
+    let show_item      = MenuItem::with_id(app, "show",          t("tray_open"),          true, None::<&str>)?;
+    let show2_item     = MenuItem::with_id(app, "show2",         t("tray_open2"), account2_visible, None::<&str>)?;
+    let autostart_item = CheckMenuItem::with_id(app, "autostart",t("tray_autostart"),   true, autostart_enabled,     None::<&str>)?;
+    let notify_item    = CheckMenuItem::with_id(app, "toggle_notify",t("tray_notify"), true, notifications_enabled, None::<&str>)?;
+    let account2_item  = CheckMenuItem::with_id(app, "account2", t("tray_account2"),  true, account2_visible, None::<&str>)?;
+    let pdf_reader_item = CheckMenuItem::with_id(app, "toggle_pdf_reader", t("tray_pdf_reader"), true, pdf_external_reader, None::<&str>)?;
+    let update_item    = MenuItem::with_id(app, "update",         t("tray_update"),    true, None::<&str>)?;
+    let logs_item      = MenuItem::with_id(app, "logs",           t("tray_logs"),                true, None::<&str>)?;
+    let quit_item      = MenuItem::with_id(app, "quit",           t("tray_quit"),                   true, None::<&str>)?;
 
     let items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
-        &show_item, &autostart_item, &notify_item, &account2_item, &pdf_reader_item, &update_item, &logs_item, &quit_item,
+        &show_item, &show2_item, &autostart_item, &notify_item, &account2_item, &pdf_reader_item, &update_item, &logs_item, &quit_item,
     ];
     Menu::with_items(app, &items)
 }
@@ -1726,6 +1705,35 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
             msg
         })?;
 
+    let pdf_external = file_name.to_lowercase().ends_with(".pdf")
+        && *app.state::<PdfExternalReaderState>().0.lock().unwrap();
+
+    if pdf_external {
+        let dir = whatajost_downloads_dir(&app).map_err(|e| {
+            log_message(&app, LogLevel::Error, &e);
+            e
+        })?;
+        let path = unique_path(&dir, &file_name);
+        std::fs::write(&path, &bytes).map_err(|e| {
+            let msg = format!("Error al guardar PDF: {e}");
+            log_message(&app, LogLevel::Error, &msg);
+            msg
+        })?;
+        let path_str = path.to_string_lossy().to_string();
+        log_message(&app, LogLevel::Info, format!("PDF guardado en {}, abriendo con lector externo", path_str));
+        if let Err(e) = app.opener().open_path(&path_str, None::<&str>) {
+            log_message(&app, LogLevel::Warn, format!("opener.open_path falló ({}), usando xdg-open...", e));
+            #[cfg(target_os = "linux")]
+            let _ = std::process::Command::new("xdg-open")
+                .arg(&path_str)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .spawn();
+        }
+        return Ok(path_str);
+    }
+
     let path = rfd::FileDialog::new()
         .set_file_name(&file_name)
         .save_file();
@@ -1921,6 +1929,7 @@ pub fn run() {
                 .on_menu_event(|app: &AppHandle, event: MenuEvent| match event.id.as_ref() {
                     "quit" => app.exit(0),
                     "show" => show_window(app),
+                    "show2" => show_window_2(app),
                     "update" => check_for_updates(app),
                     "toggle_notify" => {
                         let state = app.state::<NotificationPopupState>();
@@ -1937,18 +1946,12 @@ pub fn run() {
                         };
                         save_account2_visible(app, new_visible);
                         if new_visible {
-                            if let Some(win) = app.get_webview_window("whatsapp-web-2") {
-                                let _ = win.set_always_on_top(true);
-                                let _ = win.show();
-                                let _ = win.set_focus();
-                                let _ = win.set_always_on_top(false);
+                            if app.get_webview_window("whatsapp-web-2").is_some() {
+                                show_window_2(app);
                             } else if let Err(e) = create_whatsapp_window_2(app) {
                                 log_message(app, LogLevel::Error, format!("Error al crear segunda cuenta: {e}"));
-                            } else if let Some(win) = app.get_webview_window("whatsapp-web-2") {
-                                let _ = win.set_always_on_top(true);
-                                let _ = win.show();
-                                let _ = win.set_focus();
-                                let _ = win.set_always_on_top(false);
+                            } else {
+                                show_window_2(app);
                             }
                         } else if let Some(win) = app.get_webview_window("whatsapp-web-2") {
                             let _ = win.hide();
@@ -1995,13 +1998,14 @@ pub fn run() {
 
             app.manage(tray);
 
-            // Check for updates in background after app starts, then every 2 hours
+            // Check for updates in background after app starts, then every 10 minutes
+            // TODO: volver a 2 horas (2 * 60 * 60) una vez confirmado que el rechequeo funciona.
             let handle = app.handle().clone();
             std::thread::spawn(move || {
                 std::thread::sleep(Duration::from_secs(5));
                 loop {
                     check_for_updates_impl(&handle, true);
-                    std::thread::sleep(Duration::from_secs(2 * 60 * 60));
+                    std::thread::sleep(Duration::from_secs(10 * 60));
                 }
             });
 
