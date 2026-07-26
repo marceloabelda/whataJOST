@@ -217,18 +217,19 @@ Todas las escrituras usan `modify_config(app, |json| { ... })`: lee el JSON exis
 - **Desde el menú:** llamado con `silent=false` (muestra diálogos de error si falla).
 
 Flujo:
-1. `tauri_plugin_updater` verifica `latest.json` en GitHub releases.
+1. `tauri_plugin_updater` verifica `latest.json` en GitHub releases. Como no fijamos `.target(...)` al registrar el plugin, la resolución de URL/firma prueba primero `linux-x86_64-{bundle_type}` (con `bundle_type()` detectado en runtime vía el patching binario que hace `tauri-bundler` con `patchelf` en cada paquete) y si no existe esa clave cae a `linux-x86_64` genérico. Hoy `latest.json` solo define una clave específica extra para AppImage (`linux-x86_64-appimage`) — deb y rpm comparten la genérica.
 2. Si hay update: diálogo `OkCancel` con la versión nueva.
-3. Descarga el paquete a un temp file (`.deb` en Linux, `.msi` en Windows).
-4. **Linux — 4 intentos de instalación en cascada:**
+3. Descarga el paquete (`update.download(...)`).
+4. **Linux, corriendo como AppImage** (detectado con `std::env::var_os("APPIMAGE")`, la variable que el propio runtime de AppImage setea): se usa `update.install(bytes)` — el instalador que ya trae `tauri-plugin-updater`, que hace un `rename` del AppImage actual a un backup temporal, escribe los bytes nuevos en el path original y restaura los permisos (evita "text file busy" porque nunca escribe sobre el inode que está corriendo). No necesita root. Si tiene éxito, `h.restart()` (que también es AppImage-aware: relanza el path de `$APPIMAGE`, no el binario montado en el `/tmp` de FUSE).
+5. **Linux, instalado como .deb/.rpm** (cualquier otro caso): se guarda el paquete a un temp file (`.deb`) y 4 intentos de instalación en cascada:
    - `pkexec apt install --yes <file>` (Ubuntu moderno, maneja dependencias)
    - `pkexec dpkg -i <file>` (fallback sin resolver deps)
    - `zenity --password` + `sudo -S dpkg -i <file>` (fallback sin pkexec)
    - `xdg-open <file>` (abre el instalador gráfico del sistema; muestra aviso al usuario para que complete manualmente)
-5. **Windows:** `msiexec /i <file> /quiet`
-6. Si la instalación exitosa: relanza el binario nuevo con `sh -c "sleep 2 && exec '<exe>'"` (el delay de 2 s permite que el proceso viejo libere el lock de `tauri_plugin_single_instance`) → `app.exit(0)`.
+6. **Windows:** `msiexec /i <file> /quiet`.
+7. Si la instalación fue exitosa (deb/rpm o Windows): `h.restart()`.
 
-> **⚠ No tocar:** el delay de 2 s antes de relanzar (sin él, el nuevo proceso ve el lock del viejo y no arranca). El orden de los 4 intentos Linux (el 4º abre un diálogo y retorna, no espera a que el usuario instale — si se invierte el orden, los intentos con pkexec no corren).
+> **⚠ No tocar:** el orden de los 4 intentos Linux del paso 5 (el último abre un diálogo y retorna, no espera a que el usuario instale — si se invierte el orden, los intentos con pkexec no corren). El chequeo de `APPIMAGE` tiene que ir *antes* de escribir el temp file `.deb` — si un usuario de AppImage cayera en la cascada pkexec/dpkg, fallaría siempre (no es un paquete Debian).
 
 ---
 
@@ -299,7 +300,7 @@ El script:
 3. Commitea los cambios de versión y lock files (`Release v<version>`)
 4. Crea y pushea el tag `v<version>` a GitHub y git.jost.ar
 
-El build y la publicación del release (`.deb`, `.sig`, `latest.json`) los hace GitHub Actions al detectar el tag — no corren localmente. Seguir el progreso en `https://github.com/marceloabelda/whataJOST/actions`.
+El build y la publicación del release (`.deb`, `.rpm`, `.AppImage`, `.msi`, `.sig`, `latest.json`) los hace GitHub Actions al detectar el tag — no corren localmente. Seguir el progreso en `https://github.com/marceloabelda/whataJOST/actions`.
 
 Requisitos:
 - Estar en la rama `main` sin cambios pendientes

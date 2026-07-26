@@ -153,9 +153,22 @@ jobs:
           for deb in glob.glob('artifacts/**/*.deb', recursive=True):
               sig_path = deb + '.sig'
               if os.path.exists(sig_path):
+                  # Clave genérica: fallback para cualquier instalación Linux que no
+                  # matchee una clave más específica (ej. rpm, sin AppImage detectado).
                   platforms['linux-x86_64'] = {
                       'signature': open(sig_path).read().strip(),
                       'url': f"{repo_url}/releases/download/v{version}/{os.path.basename(deb)}"
+                  }
+
+          for appimage in glob.glob('artifacts/**/*.AppImage', recursive=True):
+              sig_path = appimage + '.sig'
+              if os.path.exists(sig_path):
+                  # El updater prueba "linux-x86_64-{bundle_type}" antes que la clave
+                  # genérica (bundle_type se detecta en runtime vía patchelf), así que
+                  # las apps corriendo como AppImage reciben este asset en vez del .deb.
+                  platforms['linux-x86_64-appimage'] = {
+                      'signature': open(sig_path).read().strip(),
+                      'url': f"{repo_url}/releases/download/v{version}/{os.path.basename(appimage)}"
                   }
 
           for msi in glob.glob('artifacts/**/*.msi', recursive=True):

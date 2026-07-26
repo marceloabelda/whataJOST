@@ -274,6 +274,29 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                 }
                             };
 
+                            // AppImage no requiere privilegios de root: reemplazar el propio
+                            // archivo en su lugar (vía el installer del plugin, que hace un
+                            // rename→write→restore-permissions seguro) y relanzar alcanza. La
+                            // cascada pkexec/dpkg de abajo es solo para instalaciones .deb/.rpm.
+                            #[cfg(target_os = "linux")]
+                            if std::env::var_os("APPIMAGE").is_some() {
+                                match update.install(bytes) {
+                                    Ok(()) => {
+                                        log_message(&h, LogLevel::Info, "AppImage actualizado in situ. Relanzando...");
+                                        h.restart();
+                                    }
+                                    Err(e) => {
+                                        h.dialog()
+                                            .message(if es { format!("Error al instalar: {e}") } else { format!("Failed to install: {e}") })
+                                            .title(t("dlg_title_error"))
+                                            .kind(MessageDialogKind::Error)
+                                            .buttons(MessageDialogButtons::Ok)
+                                            .show(|_| {});
+                                    }
+                                }
+                                return;
+                            }
+
                             // Guardar en un archivo temporal
                             #[cfg(target_os = "linux")]
                             let tmp = std::env::temp_dir().join(format!(
