@@ -7,6 +7,9 @@ use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 use serde::Serialize;
 
+mod constants;
+use constants::*;
+
 #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
 use webkit2gtk::{SettingsExt, WebContextExt, WebViewExt};
 
@@ -53,8 +56,6 @@ struct FileDropResult {
 
 struct LogState(Arc<Mutex<VecDeque<LogEntry>>>);
 
-const MAX_LOG_ENTRIES: usize = 500;
-
 fn format_timestamp() -> String {
     let secs = SystemTime::now()
         .duration_since(UNIX_EPOCH)
@@ -96,7 +97,7 @@ fn handle_deep_link(app: &AppHandle, url: &str) {
     show_window(app);
     let app2 = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(800));
+        std::thread::sleep(Duration::from_millis(DEEP_LINK_NAVIGATION_DELAY_MS));
         if let Some(win) = app2.get_webview_window("whatsapp-web") {
             let js = match serde_json::to_string(&web_url) {
                 Ok(url_json) => format!("window.location.href = {};", url_json),
@@ -118,7 +119,7 @@ fn show_window(app: &AppHandle) {
         let _ = window.set_focus();
         let win = window.clone();
         std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(150));
+            std::thread::sleep(std::time::Duration::from_millis(GTK_WINDOW_RESTORE_DELAY_MS));
             let _ = win.set_always_on_top(false);
             // On Ubuntu 26 / WebKitGTK 2.48+, showing a previously hidden window
             // doesn't trigger a configure_notify from the WM, leaving the WebKit
@@ -464,11 +465,11 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
         app,
         label,
         WebviewUrl::External(
-            "https://web.whatsapp.com/"
+            WHATSAPP_WEB_URL
                 .parse()
                 .unwrap_or_else(|e| {
                     eprintln!("[init] Failed to parse WhatsApp URL: {}", e);
-                    "https://web.whatsapp.com/".parse().expect("hardcoded URL is valid")
+                    WHATSAPP_WEB_URL.parse().expect("hardcoded URL is valid")
                 }),
         ),
     )
@@ -1427,7 +1428,6 @@ const DIGIT_PATTERNS: [[u8; 7]; 10] = [
 ];
 
 const PLUS_PATTERN: [u8; 7] = [0b00000, 0b00100, 0b00100, 0b11111, 0b00100, 0b00100, 0b00000];
-const FONT_SCALE: u32 = 2;
 
 fn set_pixel(rgba: &mut [u8], img_w: u32, x: u32, y: u32, r: u8, g: u8, b: u8, a: u8) {
     let i = ((y * img_w + x) * 4) as usize;
@@ -1505,11 +1505,11 @@ fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, count: u32) {
     } else {
         count.to_string().chars().collect()
     };
-    let char_w = (5 * FONT_SCALE) as f32;
-    let spacing = FONT_SCALE as f32;
+    let char_w = (5 * TRAY_BADGE_FONT_SCALE) as f32;
+    let spacing = TRAY_BADGE_FONT_SCALE as f32;
     let total_w = text.len() as f32 * char_w + (text.len() as f32 - 1.0) * spacing;
     let start_x = cx - total_w / 2.0;
-    let text_h = (7 * FONT_SCALE) as f32;
+    let text_h = (7 * TRAY_BADGE_FONT_SCALE) as f32;
     let start_y = cy - text_h / 2.0;
     for (i, ch) in text.iter().enumerate() {
         let pat = match ch {
@@ -1517,7 +1517,7 @@ fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, count: u32) {
             '+' => &PLUS_PATTERN,
             _ => continue,
         };
-        draw_char(rgba, img_w, start_x + i as f32 * (char_w + spacing), start_y, pat, FONT_SCALE);
+        draw_char(rgba, img_w, start_x + i as f32 * (char_w + spacing), start_y, pat, TRAY_BADGE_FONT_SCALE);
     }
 }
 
@@ -1533,8 +1533,8 @@ fn regenerate_tray_icon(app: &AppHandle) {
     let mut rgba = badge.base_rgba.clone();
 
     if count > 0 {
-        draw_filled_circle(&mut rgba, 64, 64, 48.0, 16.0, 14.0, 255, 59, 48);
-        draw_count_text(&mut rgba, 64, 48.0, 16.0, count);
+        draw_filled_circle(&mut rgba, 64, 64, TRAY_BADGE_CENTER_X as f32, TRAY_BADGE_CENTER_Y as f32, TRAY_BADGE_RADIUS, TRAY_BADGE_RED, TRAY_BADGE_GREEN, TRAY_BADGE_BLUE);
+        draw_count_text(&mut rgba, 64, TRAY_BADGE_CENTER_X as f32, TRAY_BADGE_CENTER_Y as f32, count);
     }
 
     let tray = app.state::<TrayIcon>();
