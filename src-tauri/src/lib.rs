@@ -68,14 +68,21 @@ fn format_timestamp() -> String {
 
 fn log_message(app: &AppHandle, level: LogLevel, message: impl Into<String>) {
     let state = app.state::<LogState>();
-    let mut logs = state.0.lock().unwrap();
-    logs.push_back(LogEntry {
-        timestamp: format_timestamp(),
-        level,
-        message: message.into(),
-    });
-    while logs.len() > MAX_LOG_ENTRIES {
-        logs.pop_front();
+    let result = state.0.lock();
+    match result {
+        Ok(mut logs) => {
+            logs.push_back(LogEntry {
+                timestamp: format_timestamp(),
+                level,
+                message: message.into(),
+            });
+            while logs.len() > MAX_LOG_ENTRIES {
+                logs.pop_front();
+            }
+        }
+        Err(e) => {
+            eprintln!("[LogState] Mutex poisoned: {}", e);
+        }
     }
 }
 
@@ -91,10 +98,13 @@ fn handle_deep_link(app: &AppHandle, url: &str) {
     std::thread::spawn(move || {
         std::thread::sleep(Duration::from_millis(800));
         if let Some(win) = app2.get_webview_window("whatsapp-web") {
-            let js = format!(
-                "window.location.href = {};",
-                serde_json::to_string(&web_url).unwrap()
-            );
+            let js = match serde_json::to_string(&web_url) {
+                Ok(url_json) => format!("window.location.href = {};", url_json),
+                Err(e) => {
+                    eprintln!("[deep_link] JSON serialization failed: {}", e);
+                    return;
+                }
+            };
             let _ = win.eval(&js);
         }
     });
@@ -356,7 +366,9 @@ fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                             .spawn()
                                             .and_then(|mut child| {
                                                 use std::io::Write;
-                                                let _ = child.stdin.as_mut().unwrap().write_all(pass.as_bytes());
+                                                if let Some(ref mut stdin) = child.stdin {
+                                                    let _ = stdin.write_all(pass.as_bytes());
+                                                }
                                                 child.wait()
                                             });
                                     }
@@ -451,7 +463,14 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
     let builder = WebviewWindowBuilder::new(
         app,
         label,
-        WebviewUrl::External("https://web.whatsapp.com/".parse().unwrap()),
+        WebviewUrl::External(
+            "https://web.whatsapp.com/"
+                .parse()
+                .unwrap_or_else(|e| {
+                    eprintln!("[init] Failed to parse WhatsApp URL: {}", e);
+                    "https://web.whatsapp.com/".parse().expect("hardcoded URL is valid")
+                }),
+        ),
     )
     .title(title)
     .inner_size(1280.0, 800.0)
@@ -505,9 +524,18 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
                 .to_string();
             let js = format!(
                 "window.__tauriInjectDrop&&window.__tauriInjectDrop({},{},{})",
-                serde_json::to_string(file_name).unwrap(),
-                serde_json::to_string(&b64).unwrap(),
-                serde_json::to_string(&mime).unwrap(),
+                serde_json::to_string(file_name).unwrap_or_else(|e| {
+                    eprintln!("[paste] JSON serialization failed: {}", e);
+                    "\"\"".to_string()
+                }),
+                serde_json::to_string(&b64).unwrap_or_else(|e| {
+                    eprintln!("[paste] JSON serialization failed: {}", e);
+                    "\"\"".to_string()
+                }),
+                serde_json::to_string(&mime).unwrap_or_else(|e| {
+                    eprintln!("[paste] JSON serialization failed: {}", e);
+                    "\"\"".to_string()
+                }),
             );
             if let Some(win) = opener.get_webview_window(&label_owned) {
                 let _ = win.eval(&js);
@@ -1158,9 +1186,18 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
                                     format!("GTK drop inyectado: '{}' ({})", name, mime));
                                 let js = format!(
                                     "window.__tauriInjectDrop&&window.__tauriInjectDrop({},{},{})",
-                                    serde_json::to_string(&name).unwrap(),
-                                    serde_json::to_string(&b64).unwrap(),
-                                    serde_json::to_string(&mime).unwrap(),
+                                    serde_json::to_string(&name).unwrap_or_else(|e| {
+                                        eprintln!("[drag-drop] JSON serialization failed: {}", e);
+                                        "\"\"".to_string()
+                                    }),
+                                    serde_json::to_string(&b64).unwrap_or_else(|e| {
+                                        eprintln!("[drag-drop] JSON serialization failed: {}", e);
+                                        "\"\"".to_string()
+                                    }),
+                                    serde_json::to_string(&mime).unwrap_or_else(|e| {
+                                        eprintln!("[drag-drop] JSON serialization failed: {}", e);
+                                        "\"\"".to_string()
+                                    }),
                                 );
                                 let _ = win_h2.eval(&js);
                             }
@@ -1486,7 +1523,13 @@ fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, count: u32) {
 
 fn regenerate_tray_icon(app: &AppHandle) {
     let badge = app.state::<TrayBadgeState>();
-    let count  = *badge.current_count.lock().unwrap();
+    let count = badge.current_count
+        .lock()
+        .map(|c| *c)
+        .unwrap_or_else(|e| {
+            eprintln!("[regenerate_tray_icon] Mutex poisoned: {}", e);
+            0
+        });
     let mut rgba = badge.base_rgba.clone();
 
     if count > 0 {
@@ -1500,9 +1543,30 @@ fn regenerate_tray_icon(app: &AppHandle) {
 
 fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>> {
     let autostart_enabled     = app.autolaunch().is_enabled().unwrap_or(false);
-    let notifications_enabled = *app.state::<NotificationPopupState>().0.lock().unwrap();
-    let account2_visible      = *app.state::<Account2VisibleState>().0.lock().unwrap();
-    let pdf_external_reader   = *app.state::<PdfExternalReaderState>().0.lock().unwrap();
+    let notifications_enabled = app.state::<NotificationPopupState>()
+        .0
+        .lock()
+        .map(|s| *s)
+        .unwrap_or_else(|e| {
+            eprintln!("[build_tray_menu] NotificationPopupState poisoned: {}", e);
+            true
+        });
+    let account2_visible = app.state::<Account2VisibleState>()
+        .0
+        .lock()
+        .map(|s| *s)
+        .unwrap_or_else(|e| {
+            eprintln!("[build_tray_menu] Account2VisibleState poisoned: {}", e);
+            false
+        });
+    let pdf_external_reader = app.state::<PdfExternalReaderState>()
+        .0
+        .lock()
+        .map(|s| *s)
+        .unwrap_or_else(|e| {
+            eprintln!("[build_tray_menu] PdfExternalReaderState poisoned: {}", e);
+            false
+        });
 
     let show_item      = MenuItem::with_id(app, "show",          t("tray_open"),          true, None::<&str>)?;
     let show2_item     = MenuItem::with_id(app, "show2",         t("tray_open2"), account2_visible, None::<&str>)?;
@@ -1646,8 +1710,12 @@ fn url_encode(s: &str) -> String {
             b' ' => out.push('+'),
             _ => {
                 out.push('%');
-                out.push(char::from_digit((byte >> 4) as u32, 16).unwrap().to_ascii_uppercase());
-                out.push(char::from_digit((byte & 0xf) as u32, 16).unwrap().to_ascii_uppercase());
+                if let Some(c) = char::from_digit((byte >> 4) as u32, 16) {
+                    out.push(c.to_ascii_uppercase());
+                }
+                if let Some(c) = char::from_digit((byte & 0xf) as u32, 16) {
+                    out.push(c.to_ascii_uppercase());
+                }
             }
         }
     }
@@ -1679,7 +1747,10 @@ fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
     if let Some(existing) = app.get_webview_window("notification") {
         let js = format!(
             "window.location.replace({});",
-            serde_json::to_string(&path).unwrap()
+            serde_json::to_string(&path).unwrap_or_else(|e| {
+                eprintln!("[show_notification_internal] JSON serialization failed: {}", e);
+                "\"/fallback\"".to_string()
+            })
         );
         let _ = existing.eval(&js);
         let _ = existing.set_position(tauri::LogicalPosition::new(x, y));
@@ -1707,7 +1778,17 @@ fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
 
 #[tauri::command]
 fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, title: String, body: String) {
-    if !*state.0.lock().unwrap() { return; }
+    let is_enabled = state
+        .0
+        .lock()
+        .map(|s| *s)
+        .unwrap_or_else(|e| {
+            eprintln!("[show_notification] NotificationPopupState poisoned: {}", e);
+            true
+        });
+    if !is_enabled {
+        return;
+    }
     show_notification_internal(&app, &title, &body);
 }
 
@@ -1729,7 +1810,11 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
         })?;
 
     let pdf_external = file_name.to_lowercase().ends_with(".pdf")
-        && *app.state::<PdfExternalReaderState>().0.lock().unwrap();
+        && app.state::<PdfExternalReaderState>()
+            .0
+            .lock()
+            .map(|s| *s)
+            .unwrap_or(false);
 
     if pdf_external {
         let dir = whatajost_downloads_dir(&app).map_err(|e| {
@@ -1795,7 +1880,13 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
 #[tauri::command]
 fn update_unread_count(app: AppHandle, badge_state: State<'_, TrayBadgeState>, count: u32) {
     {
-        let mut current = badge_state.current_count.lock().unwrap();
+        let mut current = match badge_state.current_count.lock() {
+            Ok(c) => c,
+            Err(e) => {
+                eprintln!("[update_unread_count] Mutex poisoned: {}", e);
+                return;
+            }
+        };
         if *current == count { return; }
         *current = count;
     }
@@ -1812,12 +1903,25 @@ fn open_whatsapp(app: AppHandle) {
 
 #[tauri::command]
 fn get_logs(state: State<'_, LogState>) -> Vec<LogEntry> {
-    state.0.lock().unwrap().iter().cloned().collect()
+    state
+        .0
+        .lock()
+        .map(|logs| logs.iter().cloned().collect())
+        .unwrap_or_else(|e| {
+            eprintln!("[get_logs] LogState poisoned: {}", e);
+            Vec::new()
+        })
 }
 
 #[tauri::command]
 fn clear_logs(state: State<'_, LogState>) {
-    state.0.lock().unwrap().clear();
+    if let Err(e) = state.0.lock() {
+        eprintln!("[clear_logs] LogState poisoned: {}", e);
+        return;
+    }
+    if let Ok(mut logs) = state.0.lock() {
+        logs.clear();
+    }
 }
 
 #[tauri::command]
@@ -1956,16 +2060,28 @@ pub fn run() {
                     "update" => check_for_updates(app),
                     "toggle_notify" => {
                         let state = app.state::<NotificationPopupState>();
-                        let mut enabled = state.0.lock().unwrap();
-                        *enabled = !*enabled;
-                        save_notification_enabled(app, *enabled);
+                        let should_save = match state.0.lock() {
+                            Ok(mut enabled) => {
+                                *enabled = !*enabled;
+                                Some(*enabled)
+                            }
+                            Err(_e) => {
+                                eprintln!("[toggle_notify] NotificationPopupState poisoned");
+                                None
+                            }
+                        };
+                        if let Some(val) = should_save {
+                            save_notification_enabled(app, val);
+                        }
                     }
                     "account2" => {
-                        let new_visible = {
-                            let state = app.state::<Account2VisibleState>();
-                            let mut v = state.0.lock().unwrap();
+                        let state = app.state::<Account2VisibleState>();
+                        let new_visible = if let Ok(mut v) = state.0.lock() {
                             *v = !*v;
                             *v
+                        } else {
+                            eprintln!("[toggle_account2] Account2VisibleState poisoned");
+                            false
                         };
                         save_account2_visible(app, new_visible);
                         if new_visible {
@@ -1991,9 +2107,19 @@ pub fn run() {
                     }
                     "toggle_pdf_reader" => {
                         let state = app.state::<PdfExternalReaderState>();
-                        let mut enabled = state.0.lock().unwrap();
-                        *enabled = !*enabled;
-                        save_pdf_external_reader(app, *enabled);
+                        let should_save = match state.0.lock() {
+                            Ok(mut enabled) => {
+                                *enabled = !*enabled;
+                                Some(*enabled)
+                            }
+                            Err(_e) => {
+                                eprintln!("[toggle_pdf_reader] PdfExternalReaderState poisoned");
+                                None
+                            }
+                        };
+                        if let Some(val) = should_save {
+                            save_pdf_external_reader(app, val);
+                        }
                     }
                     "logs" => open_logs(app.clone()),
                     _ => {}
