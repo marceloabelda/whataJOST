@@ -181,18 +181,7 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
             log_message(&opener, LogLevel::Warn, format!("Link bloqueado (esquema '{}' no permitido): {}", scheme, url));
             false
         } else {
-            let url_str = url.as_str().to_string();
-            log_message(&opener, LogLevel::Info, format!("Link externo: {}", url_str));
-            if let Err(e) = opener.opener().open_url(&url_str, None::<&str>) {
-                log_message(&opener, LogLevel::Warn, format!("opener.open_url falló ({}), usando xdg-open...", e));
-                #[cfg(target_os = "linux")]
-                let _ = std::process::Command::new("xdg-open")
-                    .arg(&url_str)
-                    .stdin(std::process::Stdio::null())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .spawn();
-            }
+            open_url_external(&opener, url.as_str());
             false
         }
     })
@@ -298,6 +287,38 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
         }
     });
 
+    Ok(())
+}
+
+/// Abre una URL en la app del sistema (navegador, cliente de mail...). El
+/// esquema ya tiene que venir validado (http, https, mailto, tel).
+fn open_url_external(app: &AppHandle, url: &str) {
+    log_message(app, LogLevel::Info, format!("Link externo: {}", url));
+    if let Err(e) = app.opener().open_url(url, None::<&str>) {
+        log_message(app, LogLevel::Warn, format!("opener.open_url falló ({}), usando xdg-open...", e));
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open")
+            .arg(url)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
+    }
+}
+
+/// Links que el usuario clickea en WhatsApp (o que WhatsApp abre con
+/// `window.open`) y no son `web.whatsapp.com`: van al navegador. Es un comando
+/// aparte de `on_navigation` porque ahí se permiten dominios de Meta para los
+/// iframes de WhatsApp (pagos, visor de PDF), y un link del usuario a uno de
+/// esos dominios terminaba cargándose dentro de la app o perdiéndose.
+#[tauri::command]
+pub(crate) fn open_external(app: AppHandle, url: String) -> Result<(), String> {
+    let parsed: tauri::Url = url.parse().map_err(|e| format!("URL inválida: {e}"))?;
+    if !matches!(parsed.scheme(), "http" | "https" | "mailto" | "tel") {
+        log_message(&app, LogLevel::Warn, format!("Link bloqueado (esquema '{}' no permitido): {}", parsed.scheme(), url));
+        return Err("esquema no permitido".to_string());
+    }
+    open_url_external(&app, parsed.as_str());
     Ok(())
 }
 

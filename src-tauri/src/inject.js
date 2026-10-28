@@ -20,8 +20,19 @@
         Object.defineProperty(document, 'hidden', { get: () => false, configurable: true });
     } catch(e) {}
 
-    const isWhatsApp = (url) =>
-        /whatsapp\.(com|net)|facebook\.com|fbcdn\.net/.test(new URL(url).hostname);
+    // Links del usuario: solo web.whatsapp.com se queda en la app. El resto
+    // (incluidos facebook.com y faq.whatsapp.com) va al navegador por IPC
+    // open_external. La lista de dominios de on_navigation (Rust) es otra cosa:
+    // decide qué puede cargarse en el WebView, incluidos iframes de WhatsApp.
+    const isInternal = (url) => new URL(url, location.href).hostname === 'web.whatsapp.com';
+    const isExternalLink = (url) => /^(https?|mailto|tel):/i.test(url) && !isInternal(url);
+    const openExternal = (url) => {
+        if (!window.__TAURI_INTERNALS__) return;
+        window.__TAURI_INTERNALS__.invoke('log_js', { level: 'info', message: 'Link externo: ' + url });
+        window.__TAURI_INTERNALS__.invoke('open_external', { url: url }).catch(function(e) {
+            window.__TAURI_INTERNALS__.invoke('log_js', { level: 'error', message: 'open_external falló: ' + e });
+        });
+    };
 
     // Rastrear el último elemento editable enfocado.
     // Al hacer drag & drop, document.activeElement puede ser body si el foco
@@ -70,12 +81,8 @@
                 downloadBlob(url, 'archivo');
                 return null;
             }
-            if (!isWhatsApp(url)) {
-                window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
-                    level: 'info',
-                    message: 'Link externo interceptado (window.open): ' + url
-                });
-                window.location.href = url;
+            if (isExternalLink(url)) {
+                openExternal(url);
                 return null;
             }
         } catch(e) {
@@ -205,14 +212,10 @@
                         downloadBlob(node.href, node.download || 'archivo');
                         break;
                     }
-                    if (!isWhatsApp(node.href)) {
+                    if (isExternalLink(node.href)) {
                         e.preventDefault();
                         e.stopImmediatePropagation();
-                        window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
-                            level: 'info',
-                            message: 'Link externo interceptado (click): ' + node.href
-                        });
-                        window.location.href = node.href;
+                        openExternal(node.href);
                     }
                 } catch(e) {
                     window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {

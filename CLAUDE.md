@@ -164,7 +164,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
   - **Lectura de archivos locales** (`NATIVE_DROPS` en `clipboard.rs`): `read_file_for_drop` (IPC) y la navegación a `file://` (Capa 4 de drag & drop) los puede disparar el JS de la página por su cuenta, así que solo leen rutas registradas por un arrastre nativo (señal GTK de la Capa 1 o `DragDropEvent` Enter/Drop de la Capa 3) en los últimos `NATIVE_DROP_ALLOW_SECS` (30 s). Sin esto, cualquier script en web.whatsapp.com podía leer `~/.ssh/id_rsa`.
   - **Dominios** (`on_navigation`): se navega dentro de la app solo con `http(s)` y dominio exacto o subdominio de `whatsapp.com`, `whatsapp.net`, `facebook.com`, `fbcdn.net` (`host == d || host.ends_with(".d")`). Antes era `ends_with("whatsapp.com")`, que aceptaba `evilwhatsapp.com`.
   - **Esquemas externos**: a `opener`/`xdg-open` solo van `http`, `https`, `mailto` y `tel`; el resto (`smb:`, `sftp:`, handlers de otras apps) se bloquea y se loggea.
-- **Links externos:** `window.open` override + `document.addEventListener('click', capture)` redirigen URLs no-WhatsApp a `window.location.href` → `on_navigation` las abre con `opener.open_url()` del plugin opener. Si `open_url()` falla, se lanza `xdg-open <url>` directamente como fallback. Ambos intentos quedan en los logs.
+- **Links externos:** `window.open` override + `document.addEventListener('click', capture)` en `inject.js`. Para links `http(s)`/`mailto`/`tel` cuyo host **no** es `web.whatsapp.com` (`isExternalLink`), cancelan el click y llaman al comando IPC `open_external(url)`, que valida el esquema y abre con `opener.open_url()` (fallback `xdg-open`). Antes usaban `window.location.href` y una lista JS que trataba `facebook.com` (y todo `*.whatsapp.com`) como interna: esos links no se interceptaban, WhatsApp los abría con `window.open` y el override los descartaba en silencio (links de Facebook que "no abrían"). La lista de dominios de `on_navigation` (Rust) es otra cosa y sigue incluyendo dominios de Meta: decide qué puede cargarse en el WebView, incluidos iframes de WhatsApp (pagos en `*.facebook.com`, visor de PDF en `webtp.whatsapp.net`); si igual llega ahí una navegación externa, la abre en el navegador.
 
 - **Deep links `whatsapp://` (funciona ✓):**
   El sistema operativo puede abrir WhataJOST cuando el usuario hace clic en un link `whatsapp://send?phone=...` en el browser o en otra app.
@@ -278,6 +278,7 @@ Flujo:
 | `show_notification(title, body)` | Linux: notificación nativa D-Bus. Otras: reusa (o crea) la ventana `notification` (HTML transparente, always-on-top) que se auto-oculta a los 5,5 s |
 | `close_notification` | Oculta la ventana de notificación (no la destruye, para reusarla) |
 | `open_whatsapp` | Muestra y enfoca la ventana principal, oculta la notificación |
+| `open_external(url)` | Abre en el navegador/app del sistema un link que el usuario clickeó (solo `http`, `https`, `mailto`, `tel`) |
 | `log_js(level, message)` | Recibe logs del script JS y los agrega al buffer en memoria (capado a `MAX_LOG_ENTRIES` = 500, `VecDeque`) |
 | `get_logs` | Devuelve todos los logs del buffer (usada por `logs.html`) |
 | `clear_logs` | Vacía el buffer de logs |

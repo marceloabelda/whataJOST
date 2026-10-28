@@ -64,6 +64,7 @@ pub fn run() {
             notifications::show_notification,
             notifications::close_notification,
             window::open_whatsapp,
+            window::open_external,
             clipboard::read_clipboard_image,
             clipboard::read_file_for_drop,
             downloads::save_file_begin,

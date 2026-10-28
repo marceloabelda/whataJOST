@@ -12,6 +12,7 @@ commands.allow = [
   "show_notification",
   "close_notification",
   "open_whatsapp",
+  "open_external",
   "log_js",
   "get_logs",
   "clear_logs",
