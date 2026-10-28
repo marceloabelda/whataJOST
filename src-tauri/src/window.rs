@@ -120,7 +120,7 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
     .inner_size(1280.0, 800.0)
     .visible(false)
     .focused(false)
-    .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+    .user_agent(&chrome_user_agent())
     .on_page_load(|win, payload| {
         if win.label() == "whatsapp-web" && payload.event() == tauri::webview::PageLoadEvent::Finished {
             on_whatsapp_loaded(win.app_handle());
@@ -290,6 +290,19 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
     Ok(())
 }
 
+/// User agent de Chrome/Linux para que WhatsApp Web no rechace el navegador
+/// ni le recorte funciones. La versión mayor se estima por fecha (Chrome saca
+/// una cada 4 semanas: la 131 salió el 2024-11-12), así no queda vieja entre
+/// releases de WhataJOST; un UA fijo quedó 25 versiones atrás.
+pub(crate) fn chrome_user_agent() -> String {
+    const BASE_VERSION: u64 = 131;
+    const BASE_RELEASE_UNIX: u64 = 1_731_369_600; // 2024-11-12 00:00 UTC
+    const CYCLE_SECS: u64 = 28 * 24 * 60 * 60;
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).map(|d| d.as_secs()).unwrap_or(0);
+    let major = BASE_VERSION + now.saturating_sub(BASE_RELEASE_UNIX) / CYCLE_SECS;
+    format!("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{major}.0.0.0 Safari/537.36")
+}
+
 /// Abre una URL en la app del sistema (navegador, cliente de mail...). El
 /// esquema ya tiene que venir validado (http, https, mailto, tel).
 fn open_url_external(app: &AppHandle, url: &str) {
@@ -336,5 +349,16 @@ pub(crate) fn open_whatsapp(app: AppHandle) {
     show_window(&app);
     if let Some(win) = app.get_webview_window("notification") {
         let _ = win.hide();
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn user_agent_con_version_de_chrome_vigente() {
+        let ua = super::chrome_user_agent();
+        let major: u64 = ua.split("Chrome/").nth(1).and_then(|s| s.split('.').next()).and_then(|s| s.parse().ok()).unwrap();
+        // 2026-10-28 → 156 (Chrome estable real ese día: 156.0.8078.73)
+        assert!(major >= 156, "UA desactualizado: {ua}");
     }
 }
