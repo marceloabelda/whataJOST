@@ -4,20 +4,10 @@
   "version": "1.2.9",
   "identifier": "com.whatajost.app",
   "build": {
-    "beforeDevCommand": "pnpm dev",
-    "devUrl": "http://localhost:1420",
-    "beforeBuildCommand": "pnpm build",
-    "frontendDist": "../dist"
+    "frontendDist": "../public"
   },
   "app": {
-    "windows": [
-      {
-        "title": "whataJOST",
-        "width": 1,
-        "height": 1,
-        "visible": false
-      }
-    ],
+    "windows": [],
     "security": {
       "csp": null
     }

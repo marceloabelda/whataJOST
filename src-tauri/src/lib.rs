@@ -1728,8 +1728,81 @@ fn url_encode(s: &str) -> String {
     out
 }
 
+/// Monitor donde ubicar ventanas auxiliares (toast, logs). En Wayland no hay
+/// "monitor principal" y `primary_monitor()` devuelve None: se cae al monitor
+/// de la ventana de WhatsApp, o al primero disponible.
+fn target_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
+    app.primary_monitor().ok().flatten()
+        .or_else(|| app.get_webview_window("whatsapp-web").and_then(|w| w.current_monitor().ok().flatten()))
+        .or_else(|| app.available_monitors().ok().and_then(|m| m.into_iter().next()))
+}
+
+/// Notificación nativa del escritorio (D-Bus / libnotify). En Wayland las
+/// apps no pueden posicionar sus ventanas, así que el toast HTML salía
+/// centrado; la notificación nativa la ubica el escritorio.
+///
+/// Todas las notificaciones reusan el mismo id (`replaces_id`): se muestra
+/// solo la última, igual que el toast. Gracias a eso alcanza con un único
+/// thread esperando el click — se queda en `wait_for_action` hasta que el
+/// usuario clickea o descarta la notificación, y cubre las que la reemplazan.
+#[cfg(target_os = "linux")]
+fn show_native_notification(app: &AppHandle, title: &str, body: &str) {
+    static NATIVE_NOTIF_ID: Mutex<Option<u32>> = Mutex::new(None);
+    static NATIVE_NOTIF_WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+    let mut notification = notify_rust::Notification::new();
+    notification
+        .appname("WhataJOST")
+        .summary(title)
+        .body(body)
+        .icon("whatajost")
+        .hint(notify_rust::Hint::DesktopEntry("whataJOST".to_string()))
+        .action("default", "Abrir WhatsApp");
+    if let Some(id) = NATIVE_NOTIF_ID.lock().ok().and_then(|g| *g) {
+        notification.id(id);
+    }
+    let handle = match notification.show() {
+        Ok(h) => h,
+        Err(e) => {
+            log_message(app, LogLevel::Error, format!("Error al mostrar notificación nativa: {e}"));
+            return;
+        }
+    };
+    if let Ok(mut g) = NATIVE_NOTIF_ID.lock() {
+        *g = Some(handle.id());
+    }
+    if NATIVE_NOTIF_WAITING.swap(true, Ordering::SeqCst) {
+        return; // ya hay un thread esperando el click sobre este id
+    }
+    let app = app.clone();
+    std::thread::spawn(move || {
+        handle.wait_for_action(|action| {
+            if action == "default" {
+                show_window(&app);
+            }
+        });
+        // Clickeada o descartada: la próxima notificación usa un id nuevo.
+        if let Ok(mut g) = NATIVE_NOTIF_ID.lock() {
+            *g = None;
+        }
+        NATIVE_NOTIF_WAITING.store(false, Ordering::SeqCst);
+    });
+}
+
 fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
-    let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+    #[cfg(target_os = "linux")]
+    {
+        show_native_notification(app, title, body);
+        return;
+    }
+    #[cfg(not(target_os = "linux"))]
+    show_toast_notification(app, title, body);
+}
+
+/// Toast HTML propio (ventana `notification`). Se usa fuera de Linux.
+#[cfg_attr(target_os = "linux", allow(dead_code))]
+fn show_toast_notification(app: &AppHandle, title: &str, body: &str) {
+    let (x, y) = if let Some(monitor) = target_monitor(app) {
         let scale = monitor.scale_factor();
         let size  = monitor.size();
         let pos   = monitor.position();
@@ -1738,6 +1811,7 @@ fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
             pos.y as f64 / scale + size.height as f64 / scale - 100.0 - 16.0,
         )
     } else {
+        log_message(app, LogLevel::Warn, "Notificación descartada: no se pudo obtener ningún monitor");
         return;
     };
     let path = format!("notification.html?t={}&b={}", url_encode(title), url_encode(body));
@@ -2021,7 +2095,7 @@ fn open_logs(app: AppHandle) {
         return;
     }
 
-    let (x, y) = if let Ok(Some(monitor)) = app.primary_monitor() {
+    let (x, y) = if let Some(monitor) = target_monitor(&app) {
         let scale = monitor.scale_factor();
         let size = monitor.size();
         let pos = monitor.position();

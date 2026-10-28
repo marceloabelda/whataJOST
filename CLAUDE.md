@@ -156,7 +156,10 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
   2. **Primera apertura** — `setup()`: lee `std::env::args()`, si encuentra `whatsapp://` lanza un thread que espera 5 s (para que la app cargue completamente) y llama `handle_deep_link`.
 - **Menú contextual (lib.rs:674):** Handlers capture-phase en `contextmenu`/`mousedown`/`mouseup` bloquean los listeners de WhatsApp en campos editables (`isContentEditable`, `INPUT`, `TEXTAREA`) → aparece el menú nativo de WebKitGTK con corrección ortográfica.
 - **Badge no leídos:** `MutationObserver` en `<title>` parsea `(N) WhatsApp` y llama `update_unread_count` IPC (solo si el número cambió). Hasta que aparece el `<title>`, un observer temporal mira el DOM completo y **se desconecta apenas lo encuentra** — dejarlo conectado lo dispararía con cada mutación de WhatsApp durante toda la sesión. Un `setInterval` de 30 s funciona de red de seguridad: si WhatsApp reemplazó el elemento `<title>`, re-engancha el observer.
-- **Notificaciones (lib.rs:913):** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente. `show_notification_internal` (Rust) reusa la ventana `notification` entre toasts en vez de destruirla y recrearla: si ya existe, navega su contenido con `window.location.replace(...)` y la reposiciona/muestra; si no, la crea. `close_notification` y `open_whatsapp` la ocultan (`hide`) en vez de cerrarla, para que quede disponible para el próximo toast. Un contador de generación (`NotificationGenState`) evita que el auto-cierre diferido (5,5 s) de un toast viejo oculte uno más nuevo que reusó la misma ventana.
+- **Notificaciones:** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente. `show_notification_internal` (Rust) elige según plataforma:
+  - **Linux — notificación nativa** (`show_native_notification`, crate `notify-rust` vía D-Bus): el escritorio la ubica y respeta "No molestar"; click → `show_window`. Todas reusan el mismo id (`replaces_id`), así se ve solo la última (como el toast) y alcanza con **un único thread** bloqueado en `wait_for_action` (cubre las notificaciones que reemplazan a la primera); al clickear o descartar, se resetea el id. Se pasó a nativas porque en Wayland las apps no pueden posicionar ventanas: el toast HTML salía centrado.
+  - **Otras plataformas — toast HTML** (`show_toast_notification`): reusa la ventana `notification` entre toasts en vez de destruirla y recrearla: si ya existe, navega su contenido con `window.location.replace(...)` y la reposiciona/muestra; si no, la crea. `close_notification` y `open_whatsapp` la ocultan (`hide`) en vez de cerrarla. Un contador de generación (`NotificationGenState`) evita que el auto-cierre diferido (5,5 s) de un toast viejo oculte uno más nuevo que reusó la misma ventana.
+  - **`target_monitor`**: el toast y la ventana de logs se ubican con `primary_monitor()`, que en Wayland devuelve `None` (no existe "monitor principal"). Fallback: monitor de la ventana `whatsapp-web`, o el primero disponible. Antes de este fallback el toast se descartaba sin loggear en Wayland.
 - **Modelo de caché de WebKit:** `context.set_cache_model(CacheModel::DocumentViewer)` (en `create_whatsapp_window_impl`, junto a la corrección ortográfica). Desactiva la caché en memoria de recursos HTTP. Medido con A/B en uso real: ~1.210 MB → ~1.084 MB (~125 MB menos, ~10%) sin diferencia de fluidez notable — WhatsApp guarda sus datos en IndexedDB/service worker, no en esa caché. Los límites de memoria de WebKit (`MemoryPressureSettings`) no son configurables sin forkear wry: solo se pueden pasar al construir el `WebContext`, y eso lo hace wry internamente.
 - **User agent (lib.rs:369):** La ventana `whatsapp-web` usa un UA de Chrome/Linux para que WhatsApp Web no detecte un navegador desconocido y bloquee el acceso.
 - **Segunda cuenta al inicio (arranque):** Si `account2_visible` está en `true`, `create_whatsapp_window_2` se lanza en un `std::thread::spawn` dentro de `setup()` en vez de llamarse sincrónicamente. Crear el segundo contexto WebKit ahí adentro bloquearía el armado del tray y el registro del atajo global (Win+Alt+W) hasta que termine. Al togglear la cuenta 2 desde el tray en caliente sí se llama sincrónico (ya no está en el path crítico de arranque).
@@ -250,7 +253,7 @@ Flujo:
 | `read_clipboard_image` | Lee imagen del portapapeles del sistema con `wl-paste` o `xclip` (detecta herramienta disponible con `OnceLock`) |
 | `read_file_for_drop(path)` | Lee un archivo local por path (usado desde el DOM drop handler cuando `dataTransfer.files` está vacío en Linux) |
 | `update_unread_count(count)` | Renderiza badge numérico sobre el ícono de bandeja (pixel art en RGBA, sin librerías de imágenes) |
-| `show_notification(title, body)` | Reusa (o crea) la ventana `notification` (HTML transparente, always-on-top) que se auto-oculta a los 5,5 s |
+| `show_notification(title, body)` | Linux: notificación nativa D-Bus. Otras: reusa (o crea) la ventana `notification` (HTML transparente, always-on-top) que se auto-oculta a los 5,5 s |
 | `close_notification` | Oculta la ventana de notificación (no la destruye, para reusarla) |
 | `open_whatsapp` | Muestra y enfoca la ventana principal, oculta la notificación |
 | `log_js(level, message)` | Recibe logs del script JS y los agrega al buffer en memoria (capado a `MAX_LOG_ENTRIES` = 500, `VecDeque`) |
@@ -262,7 +265,6 @@ Flujo:
 
 | Archivo | Ventana | Permisos |
 |---|---|---|
-| `default.json` | `main` (oculta, 1×1 px) | `core`, `opener`, `updater`, `dialog`, `autostart`, `allow-whatsapp-ipc` |
 | `whatsapp-notification.json` | `whatsapp-web` (remota: `*.whatsapp.com`, `*.whatsapp.net`) | `core:default`, `clipboard-manager:allow-read-image`, `allow-whatsapp-ipc` |
 | `logs-window.json` | `logs` | `core:default`, `allow-whatsapp-ipc` |
 | `notification-window.json` | `notification` | `core:default`, `allow-whatsapp-ipc` |
@@ -274,8 +276,9 @@ La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la 
 ### Ventanas HTML (`public/`)
 
 - `logs.html` — Visor de logs en tiempo real (polling 2 s a `get_logs`); muestra error explícito si IPC no está disponible
-- `notification.html` — Toast de notificación transparente (se auto-cierra a los 5,5 s)
-- `index.html` — Página mínima para la ventana `main` (oculta)
+- `notification.html` — Toast de notificación transparente (se auto-cierra a los 5,5 s). Solo fuera de Linux.
+
+`tauri.conf.json` usa `frontendDist: "../public"` directo, sin bundler, y `app.windows: []`. Antes había una ventana `main` oculta de 1×1 px con un `index.html` vacío (resto de la plantilla) que costaba un proceso WebKit entero (~35 MB) sin uso, y Vite solo existía para compilar esa página: se eliminaron ambos. La app no se cierra por no tener esa ventana: `whatsapp-web` nunca se destruye (se oculta).
 
 ## Key dependencies
 
@@ -284,6 +287,7 @@ La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la 
 - `webkit2gtk` v2 (Linux) — corrección ortográfica + devtools en producción
 - `glib` v0.18 + `gtk` v0.18 (Linux) — señales GTK para interceptar drag & drop a nivel nativo (ya eran transitivas vía webkit2gtk; se agregan como deps directas para usar `WidgetExt::connect_drag_data_received`)
 - `mime_guess` — detección de MIME type para archivos arrastrados desde el SO
+- `notify-rust` v4 (Linux) — notificaciones nativas por D-Bus (usa `zbus` 5, que ya venía por `rfd`)
 - `wl-clipboard` (`wl-paste`) / `xclip` — lectura de imágenes del portapapeles del sistema (dependencias `.deb`)
 
 ### Bug de botones de ventana (min/max/cerrar) en Wayland — resuelto en tao ≥ 0.36
