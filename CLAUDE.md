@@ -49,16 +49,21 @@ El script se inyecta con `WebviewWindowBuilder::initialization_script` (lib.rs:4
 1. Busca el blob en `blobStore`. Si no está (revocado hace >60 s), hace `fetch(url)` para leerlo desde WebKit.
 2. Llama `saveBlob(blob, fileName)`.
 
-**`saveBlob(blob, fileName)` (lib.rs:550):**
-1. Convierte el blob a base64 con `FileReader.readAsDataURL` (extrae la parte después de la coma).
-2. Invoca IPC `save_file(data, fileName)` → Rust.
+**`saveBlob(blob, fileName)` — envío en partes:**
+1. `save_file_begin` (IPC) → Rust crea un archivo temporal vacío en `<app_cache_dir>/descargas/<id>.part` y devuelve el `id`. En la primera descarga de la sesión (`id == 0`) borra restos `.part` de sesiones anteriores.
+2. Recorre el blob en trozos de 4 MB (`blob.slice`), cada uno a base64 con `FileReader.readAsDataURL`, y llama `save_file_chunk(id, data)`. Es `async fn` en Rust: decodifica y agrega al temporal **fuera del hilo principal**.
+3. Si algo falla, `save_file_abort(id)` borra el temporal.
+4. `save_file(id, fileName)` → Rust.
 
-**`save_file` (Rust, lib.rs:1547):**
-1. Decodifica base64 con `base64::engine::general_purpose::STANDARD`.
-2. Abre `rfd::FileDialog::new().set_file_name(&file_name).save_file()`.
-3. Si el diálogo no aparece (sin xdg-portal activo en la sesión) o el usuario cancela → guarda en `~/Downloads/WhataJOST/<fileName>` como fallback y lo registra en logs.
+> **⚠ Por qué en partes y no IPC binario:** la CSP de WhatsApp (`connect-src`) no permite `ipc://`, así que en la ventana `whatsapp-web` el IPC de Tauri siempre cae a `postMessage` con JSON. Ahí un `Uint8Array` se serializa como array de números (~3,5× el tamaño), peor que base64 (1,33×). Antes se mandaba el archivo entero en un solo base64: un video de 100 MB generaba varias copias completas simultáneas (data URL, split, JSON, `String` y `Vec` en Rust) y la decodificación corría en el hilo principal. En partes, el pico extra es ~un trozo.
 
-> **⚠ No tocar:** el delay de 60 s en `blobStore` (necesario para archivos grandes), el override de `prototype.click` (es el camino principal de WhatsApp), el `on_navigation` para `blob:` (es el safety net Rust), y el orden de los tres interceptores JS.
+**`save_file` (Rust):**
+1. Abre `rfd::FileDialog::new().set_file_name(&file_name).save_file()`.
+2. Mueve el temporal al destino con `move_upload` (`rename`; si falla por estar en otro filesystem, copia y borra).
+3. Si el diálogo no aparece (sin xdg-portal activo en la sesión) o el usuario cancela → lo mueve a `~/Downloads/WhataJOST/<fileName>` como fallback y lo registra en logs.
+4. Siempre borra el temporal al final (si ya se movió no existe; si hubo error, no queda basura).
+
+> **⚠ No tocar:** el delay de 60 s en `blobStore` (necesario para archivos grandes), el override de `prototype.click` (es el camino principal de WhatsApp), el `on_navigation` para `blob:` (es el safety net Rust), y el orden de los tres interceptores JS. Al agregar comandos IPC nuevos, sumarlos a `permissions/default.toml` (ver "ACL de Tauri 2.11.1+").
 
 ---
 
@@ -68,8 +73,8 @@ El script se inyecta con `WebviewWindowBuilder::initialization_script` (lib.rs:4
 
 **Toggle en el tray:** "Descargar PDF abre con visor externo" (`CheckMenuItem` id `toggle_pdf_reader`, `build_tray_menu` lib.rs:~1418). Estado en `PdfExternalReaderState` (lib.rs:1185, `Mutex<bool>`), persistido en `config.json` como `pdf_external_reader` (default `false`) vía `load_pdf_external_reader`/`save_pdf_external_reader` (lib.rs:~1236-1247).
 
-**Mecanismo (todo dentro de `save_file`, lib.rs:~1628):** el flujo de blobs ya existente termina siempre invocando la IPC `save_file(data, file_name)`, sin importar si el blob viene de un documento, una imagen o cualquier otro archivo. Al principio de `save_file`, si `file_name` termina en `.pdf` (case-insensitive) **y** el toggle está activo:
-1. Escribe los bytes directo en `~/Downloads/WhataJOST/<nombre>` (vía `whatajost_downloads_dir`, helper compartido con el fallback normal de `save_file`), evitando pisar archivos existentes con `unique_path` (agrega `(1)`, `(2)`, etc.).
+**Mecanismo (todo dentro de `save_file`, lib.rs:~1628):** el flujo de blobs ya existente termina siempre invocando la IPC `save_file(id, file_name)`, sin importar si el blob viene de un documento, una imagen o cualquier otro archivo. Al principio de `save_file`, si `file_name` termina en `.pdf` (case-insensitive) **y** el toggle está activo:
+1. Mueve el temporal directo a `~/Downloads/WhataJOST/<nombre>` (vía `whatajost_downloads_dir`, helper compartido con el fallback normal de `save_file`), evitando pisar archivos existentes con `unique_path` (agrega `(1)`, `(2)`, etc.).
 2. Abre el archivo con `opener().open_path(...)` (con fallback a `xdg-open` en Linux si falla, mismo patrón que "Links externos").
 3. Devuelve el path sin pasar por `rfd::FileDialog` — no aparece ningún diálogo.
 
@@ -152,6 +157,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 - **Menú contextual (lib.rs:674):** Handlers capture-phase en `contextmenu`/`mousedown`/`mouseup` bloquean los listeners de WhatsApp en campos editables (`isContentEditable`, `INPUT`, `TEXTAREA`) → aparece el menú nativo de WebKitGTK con corrección ortográfica.
 - **Badge no leídos:** `MutationObserver` en `<title>` parsea `(N) WhatsApp` y llama `update_unread_count` IPC (solo si el número cambió). Hasta que aparece el `<title>`, un observer temporal mira el DOM completo y **se desconecta apenas lo encuentra** — dejarlo conectado lo dispararía con cada mutación de WhatsApp durante toda la sesión. Un `setInterval` de 30 s funciona de red de seguridad: si WhatsApp reemplazó el elemento `<title>`, re-engancha el observer.
 - **Notificaciones (lib.rs:913):** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente. `show_notification_internal` (Rust) reusa la ventana `notification` entre toasts en vez de destruirla y recrearla: si ya existe, navega su contenido con `window.location.replace(...)` y la reposiciona/muestra; si no, la crea. `close_notification` y `open_whatsapp` la ocultan (`hide`) en vez de cerrarla, para que quede disponible para el próximo toast. Un contador de generación (`NotificationGenState`) evita que el auto-cierre diferido (5,5 s) de un toast viejo oculte uno más nuevo que reusó la misma ventana.
+- **Modelo de caché de WebKit:** `context.set_cache_model(CacheModel::DocumentViewer)` (en `create_whatsapp_window_impl`, junto a la corrección ortográfica). Desactiva la caché en memoria de recursos HTTP. Medido con A/B en uso real: ~1.210 MB → ~1.084 MB (~125 MB menos, ~10%) sin diferencia de fluidez notable — WhatsApp guarda sus datos en IndexedDB/service worker, no en esa caché. Los límites de memoria de WebKit (`MemoryPressureSettings`) no son configurables sin forkear wry: solo se pueden pasar al construir el `WebContext`, y eso lo hace wry internamente.
 - **User agent (lib.rs:369):** La ventana `whatsapp-web` usa un UA de Chrome/Linux para que WhatsApp Web no detecte un navegador desconocido y bloquee el acceso.
 - **Segunda cuenta al inicio (arranque):** Si `account2_visible` está en `true`, `create_whatsapp_window_2` se lanza en un `std::thread::spawn` dentro de `setup()` en vez de llamarse sincrónicamente. Crear el segundo contexto WebKit ahí adentro bloquearía el armado del tray y el registro del atajo global (Win+Alt+W) hasta que termine. Al togglear la cuenta 2 desde el tray en caliente sí se llama sincrónico (ya no está en el path crítico de arranque).
 
@@ -162,7 +168,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 **Cierre de ventana → hide (lib.rs:1080):**
 `on_window_event` con `CloseRequested` llama `api.prevent_close()` + `window.hide()`. La ventana de WhatsApp nunca se destruye; solo se oculta. Esto es intencional: destruirla y recrearla es lento y pierde la sesión si el proceso WebKit muere.
 
-**`show_window` (lib.rs:96):** Llama `set_always_on_top(true)` → `show()` → `set_focus()` → `set_always_on_top(false)`. El truco `always_on_top` es necesario en algunos WMs (ej. i3, algunos GNOME) que ignoran `set_focus()` sin que la ventana sea temporalmente top-level.
+**`show_window`:** Llama `unminimize()` → `set_always_on_top(true)` → `show()` → `set_focus()` → (150 ms después, en otro thread) `set_always_on_top(false)`. El truco `always_on_top` es necesario en algunos WMs (ej. i3, algunos GNOME) que ignoran `set_focus()` sin que la ventana sea temporalmente top-level.
 
 > **⚠ No tocar:** el orden `always_on_top(true)` → `show` → `focus` → `always_on_top(false)`. Quitar cualquier paso puede hacer que la ventana no aparezca al frente en ciertos escritorios.
 
@@ -237,7 +243,10 @@ Flujo:
 
 | Comando | Descripción |
 |---|---|
-| `save_file(data, file_name)` | Abre `rfd::FileDialog`; si el diálogo no aparece (xdg-portal), guarda en `~/Downloads/WhataJOST/` y lo registra en logs |
+| `save_file_begin` | Crea el archivo temporal de una descarga y devuelve su `id` |
+| `save_file_chunk(id, data)` | (async) Decodifica un trozo base64 y lo agrega al temporal |
+| `save_file_abort(id)` | Borra el temporal de una descarga fallida |
+| `save_file(id, file_name)` | Abre `rfd::FileDialog` y mueve el temporal ahí; si el diálogo no aparece (xdg-portal), lo mueve a `~/Downloads/WhataJOST/` y lo registra en logs |
 | `read_clipboard_image` | Lee imagen del portapapeles del sistema con `wl-paste` o `xclip` (detecta herramienta disponible con `OnceLock`) |
 | `read_file_for_drop(path)` | Lee un archivo local por path (usado desde el DOM drop handler cuando `dataTransfer.files` está vacío en Linux) |
 | `update_unread_count(count)` | Renderiza badge numérico sobre el ícono de bandeja (pixel art en RGBA, sin librerías de imágenes) |
@@ -281,7 +290,7 @@ La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la 
 
 tao 0.35.3 tenía un bug de CSD en Wayland ([tauri-apps/tauri#11856](https://github.com/tauri-apps/tauri/issues/11856), [tauri-apps/tao#1046](https://github.com/tauri-apps/tao/issues/1046)): tras ocultar/mostrar la ventana, los botones minimizar/maximizar/cerrar dejaban de responder al click. Reportado en Ubuntu 26/GNOME 48+. El fix ([tao#1218](https://github.com/tauri-apps/tao/pull/1218)) se publicó en tao 0.36.0; durante un tiempo `Cargo.toml` tuvo un `[patch.crates-io]` apuntando a la rama `dev` de tao, que se quitó al pasar a Tauri 2.12 (tao 0.37).
 
-**Si el bug vuelve a aparecer**, revisar primero la versión de tao en `Cargo.lock` antes de tocar `show_window`. El hack de resize de 1px en `show_window` (mitigación propia previa al fix de tao) sigue en el código; probablemente ya no hace falta, pero sacarlo requiere probar de nuevo en Wayland.
+**Si el bug vuelve a aparecer**, revisar primero la versión de tao en `Cargo.lock` antes de tocar `show_window`. El hack de resize de 1px que tenía `show_window` (mitigación propia previa al fix de tao) se quitó en v1.2.9 tras probar en Wayland que con tao 0.37 ya no hace falta.
 
 ## Release
 

@@ -121,32 +121,6 @@ fn show_window(app: &AppHandle) {
         std::thread::spawn(move || {
             std::thread::sleep(std::time::Duration::from_millis(GTK_WINDOW_RESTORE_DELAY_MS));
             let _ = win.set_always_on_top(false);
-            // On Ubuntu 26 / WebKitGTK 2.48+, showing a previously hidden window
-            // doesn't trigger a configure_notify from the WM, leaving the WebKit
-            // GDK sub-window's input region stale and CSD buttons unresponsive.
-            // Forcing a real 1px resize via the GTK window makes the WM emit a
-            // configure_notify, which causes a full relayout and fixes the regions.
-            // The restore is scheduled via idle_add so it runs in the next GTK
-            // main loop iteration (after the resize has been processed).
-            #[cfg(target_os = "linux")]
-            {
-                let _ = win.with_webview(|w| {
-                    use glib::Cast;
-                    use gtk::prelude::{GtkWindowExt, WidgetExt};
-                    let widget = w.inner();
-                    if let Some(toplevel) = widget.toplevel() {
-                        if let Ok(gtk_win) = toplevel.downcast::<gtk::Window>() {
-                            let (cw, ch) = gtk_win.size();
-                            gtk_win.resize(cw + 1, ch);
-                            gtk_win.present();
-                            let gtk_win2 = gtk_win.clone();
-                            glib::idle_add_local_once(move || {
-                                gtk_win2.resize(cw, ch);
-                            });
-                        }
-                    }
-                });
-            }
         });
     } else {
         log_message(app, LogLevel::Error, "No se encontró la ventana de WhatsApp");
@@ -666,24 +640,38 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
                 origRevokeObjectURL.call(URL, url);
             };
 
-            // Helper: convert blob to base64 and invoke save_file
+            // Helper: send the blob to Rust in chunks and invoke save_file.
+            // WhatsApp's CSP blocks Tauri's binary ipc:// protocol, so IPC goes
+            // through postMessage as JSON; base64 chunks keep peak memory at
+            // ~one chunk instead of several full-size copies of the file.
+            const SAVE_CHUNK_SIZE = 4 * 1024 * 1024;
+            const blobToBase64 = (blob) => new Promise((resolve, reject) => {
+                const reader = new FileReader();
+                reader.onload = () => resolve(reader.result.split(',')[1] || '');
+                reader.onerror = reject;
+                reader.readAsDataURL(blob);
+            });
             const saveBlob = async (blob, fileName) => {
                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                     level: 'info',
-                    message: 'saveBlob: leyendo blob (' + blob.size + ' bytes) para ' + fileName
+                    message: 'saveBlob: enviando blob (' + blob.size + ' bytes) para ' + fileName
                 });
-                const base64 = await new Promise((resolve, reject) => {
-                    const reader = new FileReader();
-                    reader.onload = () => resolve(reader.result.split(',')[1]);
-                    reader.onerror = reject;
-                    reader.readAsDataURL(blob);
-                });
+                const id = await window.__TAURI_INTERNALS__.invoke('save_file_begin');
+                try {
+                    for (let offset = 0; offset < blob.size; offset += SAVE_CHUNK_SIZE) {
+                        const data = await blobToBase64(blob.slice(offset, offset + SAVE_CHUNK_SIZE));
+                        await window.__TAURI_INTERNALS__.invoke('save_file_chunk', { id, data });
+                    }
+                } catch (e) {
+                    window.__TAURI_INTERNALS__.invoke('save_file_abort', { id }).catch(() => {});
+                    throw e;
+                }
                 window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                     level: 'info',
                     message: 'saveBlob: invocando save_file para ' + fileName
                 });
                 await window.__TAURI_INTERNALS__.invoke('save_file', {
-                    data: base64,
+                    id,
                     fileName: fileName || 'archivo'
                 });
             };
@@ -1010,12 +998,7 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
                                 if (!resp.ok) throw new Error('HTTP ' + resp.status);
                                 const blob = await resp.blob();
                                 const name = decodeURIComponent(uri.split('/').pop().split('?')[0]) || 'archivo';
-                                const b64 = await new Promise(function(res, rej) {
-                                    const r = new FileReader(); r.onload = function() { res(r.result.split(',')[1]); }; r.onerror = rej; r.readAsDataURL(blob);
-                                });
-                                const bin = atob(b64), arr = new Uint8Array(bin.length);
-                                for (let i = 0; i < bin.length; i++) arr[i] = bin.charCodeAt(i);
-                                dt.items.add(new File([new Blob([arr], { type: blob.type || 'application/octet-stream' })], name, { type: blob.type || 'application/octet-stream' }));
+                                dt.items.add(new File([blob], name, { type: blob.type || 'application/octet-stream' }));
                             }
                         } catch(err) {
                             window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
@@ -1142,6 +1125,10 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
             if let Some(context) = webview.context() {
                 context.set_spell_checking_enabled(true);
                 context.set_spell_checking_languages(&["es_ES", "en_US"]);
+                // DocumentViewer desactiva la caché en memoria de recursos HTTP.
+                // Medido: ~125 MB menos (~10%) sin diferencia de fluidez notable;
+                // WhatsApp guarda sus datos en IndexedDB/service worker, no en esa caché.
+                context.set_cache_model(webkit2gtk::CacheModel::DocumentViewer);
             }
             if let Some(settings) = webview.settings() {
                 settings.set_enable_developer_extras(true);
@@ -1818,16 +1805,93 @@ fn close_notification(app: AppHandle) {
     }
 }
 
+static SAVE_UPLOAD_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Archivo temporal donde se van juntando las partes de una descarga.
+/// Va en el directorio de caché de la app (mismo filesystem que el home en
+/// el caso típico, así el `rename` final no tiene que copiar).
+fn save_upload_path(app: &AppHandle, id: u64) -> Result<std::path::PathBuf, String> {
+    let dir = app
+        .path()
+        .app_cache_dir()
+        .map_err(|e| format!("Error al obtener directorio de caché: {e}"))?
+        .join("descargas");
+    std::fs::create_dir_all(&dir)
+        .map_err(|e| format!("Error al crear directorio temporal: {e}"))?;
+    Ok(dir.join(format!("{id}.part")))
+}
+
+/// Mueve el archivo temporal a su destino; si `rename` falla (otro
+/// filesystem), copia y borra el original.
+fn move_upload(src: &std::path::Path, dest: &std::path::Path) -> std::io::Result<()> {
+    if std::fs::rename(src, dest).is_ok() {
+        return Ok(());
+    }
+    std::fs::copy(src, dest)?;
+    let _ = std::fs::remove_file(src);
+    Ok(())
+}
+
 #[tauri::command]
-fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, String> {
+fn save_file_begin(app: AppHandle) -> Result<u64, String> {
+    let id = SAVE_UPLOAD_COUNTER.fetch_add(1, Ordering::SeqCst);
+    let path = save_upload_path(&app, id)?;
+    // Primera descarga de la sesión: limpiar restos de sesiones anteriores
+    // (la app pudo cerrarse a mitad de una descarga).
+    if id == 0 {
+        if let Some(dir) = path.parent() {
+            if let Ok(entries) = std::fs::read_dir(dir) {
+                for entry in entries.flatten() {
+                    let _ = std::fs::remove_file(entry.path());
+                }
+            }
+        }
+    }
+    std::fs::File::create(&path).map_err(|e| {
+        let msg = format!("Error al crear archivo temporal: {e}");
+        log_message(&app, LogLevel::Error, &msg);
+        msg
+    })?;
+    Ok(id)
+}
+
+// async: corre fuera del hilo principal, así decodificar y escribir partes
+// grandes no congela la UI.
+#[tauri::command]
+async fn save_file_chunk(app: AppHandle, id: u64, data: String) -> Result<(), String> {
+    use std::io::Write;
     let bytes = base64::engine::general_purpose::STANDARD
         .decode(&data)
+        .map_err(|e| format!("Error al decodificar archivo: {e}"))?;
+    let path = save_upload_path(&app, id)?;
+    std::fs::OpenOptions::new()
+        .append(true)
+        .open(&path)
+        .and_then(|mut f| f.write_all(&bytes))
         .map_err(|e| {
-            let msg = format!("Error al decodificar archivo: {e}");
+            let msg = format!("Error al escribir archivo temporal: {e}");
             log_message(&app, LogLevel::Error, &msg);
             msg
-        })?;
+        })
+}
 
+#[tauri::command]
+fn save_file_abort(app: AppHandle, id: u64) {
+    if let Ok(path) = save_upload_path(&app, id) {
+        let _ = std::fs::remove_file(path);
+    }
+}
+
+#[tauri::command]
+fn save_file(app: AppHandle, id: u64, file_name: String) -> Result<String, String> {
+    let tmp = save_upload_path(&app, id)?;
+    let result = save_file_impl(&app, &tmp, &file_name);
+    // Si se movió ya no existe; si hubo error o cancelación, no dejar basura.
+    let _ = std::fs::remove_file(&tmp);
+    result
+}
+
+fn save_file_impl(app: &AppHandle, tmp: &std::path::Path, file_name: &str) -> Result<String, String> {
     let pdf_external = file_name.to_lowercase().ends_with(".pdf")
         && app.state::<PdfExternalReaderState>()
             .0
@@ -1836,20 +1900,20 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
             .unwrap_or(false);
 
     if pdf_external {
-        let dir = whatajost_downloads_dir(&app).map_err(|e| {
-            log_message(&app, LogLevel::Error, &e);
+        let dir = whatajost_downloads_dir(app).map_err(|e| {
+            log_message(app, LogLevel::Error, &e);
             e
         })?;
-        let path = unique_path(&dir, &file_name);
-        std::fs::write(&path, &bytes).map_err(|e| {
+        let path = unique_path(&dir, file_name);
+        move_upload(tmp, &path).map_err(|e| {
             let msg = format!("Error al guardar PDF: {e}");
-            log_message(&app, LogLevel::Error, &msg);
+            log_message(app, LogLevel::Error, &msg);
             msg
         })?;
         let path_str = path.to_string_lossy().to_string();
-        log_message(&app, LogLevel::Info, format!("PDF guardado en {}, abriendo con lector externo", path_str));
+        log_message(app, LogLevel::Info, format!("PDF guardado en {}, abriendo con lector externo", path_str));
         if let Err(e) = app.opener().open_path(&path_str, None::<&str>) {
-            log_message(&app, LogLevel::Warn, format!("opener.open_path falló ({}), usando xdg-open...", e));
+            log_message(app, LogLevel::Warn, format!("opener.open_path falló ({}), usando xdg-open...", e));
             #[cfg(target_os = "linux")]
             let _ = std::process::Command::new("xdg-open")
                 .arg(&path_str)
@@ -1862,35 +1926,35 @@ fn save_file(app: AppHandle, data: String, file_name: String) -> Result<String, 
     }
 
     let path = rfd::FileDialog::new()
-        .set_file_name(&file_name)
+        .set_file_name(file_name)
         .save_file();
 
     match path {
         Some(p) => {
-            std::fs::write(&p, &bytes)
+            move_upload(tmp, &p)
                 .map_err(|e| {
                     let msg = format!("Error al guardar archivo: {e}");
-                    log_message(&app, LogLevel::Error, &msg);
+                    log_message(app, LogLevel::Error, &msg);
                     msg
                 })?;
             let path_str = p.to_string_lossy().to_string();
-            log_message(&app, LogLevel::Info, format!("Archivo guardado: {}", path_str));
+            log_message(app, LogLevel::Info, format!("Archivo guardado: {}", path_str));
             Ok(path_str)
         }
         None => {
-            let subdir = whatajost_downloads_dir(&app).map_err(|e| {
-                log_message(&app, LogLevel::Error, &e);
+            let subdir = whatajost_downloads_dir(app).map_err(|e| {
+                log_message(app, LogLevel::Error, &e);
                 e
             })?;
-            let fallback = subdir.join(&file_name);
-            std::fs::write(&fallback, &bytes)
+            let fallback = subdir.join(file_name);
+            move_upload(tmp, &fallback)
                 .map_err(|e| {
                     let msg = format!("Error al guardar archivo: {e}");
-                    log_message(&app, LogLevel::Error, &msg);
+                    log_message(app, LogLevel::Error, &msg);
                     msg
                 })?;
             let path_str = fallback.to_string_lossy().to_string();
-            log_message(&app, LogLevel::Info, format!("Archivo guardado en fallback (sin diálogo): {}", path_str));
+            log_message(app, LogLevel::Info, format!("Archivo guardado en fallback (sin diálogo): {}", path_str));
             Ok(path_str)
         }
     }
@@ -1934,12 +1998,9 @@ fn get_logs(state: State<'_, LogState>) -> Vec<LogEntry> {
 
 #[tauri::command]
 fn clear_logs(state: State<'_, LogState>) {
-    if let Err(e) = state.0.lock() {
-        eprintln!("[clear_logs] LogState poisoned: {}", e);
-        return;
-    }
-    if let Ok(mut logs) = state.0.lock() {
-        logs.clear();
+    match state.0.lock() {
+        Ok(mut logs) => logs.clear(),
+        Err(e) => eprintln!("[clear_logs] LogState poisoned: {}", e),
     }
 }
 
@@ -2016,6 +2077,9 @@ pub fn run() {
             open_whatsapp,
             read_clipboard_image,
             read_file_for_drop,
+            save_file_begin,
+            save_file_chunk,
+            save_file_abort,
             save_file,
             update_unread_count,
             get_logs,

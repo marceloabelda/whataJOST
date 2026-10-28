@@ -13,8 +13,8 @@ pub const MAX_LOG_ENTRIES: usize = 500;
 /// antes de poder navegar a una URL (usado en deep links)
 pub const DEEP_LINK_NAVIGATION_DELAY_MS: u64 = 800;
 
-/// Delay en ms para restaurar tamaño de ventana GTK después de mostrarla
-/// (workaround para Ubuntu 26 / WebKitGTK 2.48+ CSD buttons input region)
+/// Delay en ms antes de quitar `always_on_top` después de mostrar la ventana
+/// (algunos WMs ignoran `set_focus()` si la ventana no es top-level un instante)
 pub const GTK_WINDOW_RESTORE_DELAY_MS: u64 = 150;
 
 /// Delay en ms inicial antes del primer chequeo de actualizaciones

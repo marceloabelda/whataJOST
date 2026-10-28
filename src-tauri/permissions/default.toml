@@ -6,6 +6,9 @@ permissions = ["allow-whatsapp-ipc"]
 identifier = "allow-whatsapp-ipc"
 description = "Permite todos los comandos IPC usados desde la ventana de WhatsApp Web"
 commands.allow = [
+  "save_file_begin",
+  "save_file_chunk",
+  "save_file_abort",
   "save_file",
   "read_clipboard_image",
   "read_file_for_drop",
