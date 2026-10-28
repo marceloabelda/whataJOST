@@ -281,7 +281,7 @@ Flujo:
 
 | Archivo | Ventana | Permisos |
 |---|---|---|
-| `whatsapp-notification.json` | `whatsapp-web` (remota: `*.whatsapp.com`, `*.whatsapp.net`) | `core:default`, `clipboard-manager:allow-read-image`, `allow-whatsapp-ipc` |
+| `whatsapp-notification.json` | `whatsapp-web`, `whatsapp-web-2` (remotas: `*.whatsapp.com`, `*.whatsapp.net`) | `core:default`, `allow-whatsapp-ipc` |
 | `logs-window.json` | `logs` | `core:default`, `allow-whatsapp-ipc` |
 | `notification-window.json` | `notification` | `core:default`, `allow-whatsapp-ipc` |
 
@@ -300,6 +300,7 @@ La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la 
 
 - `rfd` v0.17 con features `xdg-portal` + `wayland` — diálogos de archivo nativos
 - `tauri-plugin-dialog` con feature `xdg-portal` — diálogos de mensaje nativos (updater, errores)
+- Se quitaron `tauri-plugin-clipboard-manager` y `tauri-plugin-process` (registrados pero sin uso, 24 crates menos): el portapapeles se lee con `wl-paste`/`xclip`, "Copiar imagen" usa la Clipboard API del navegador (habilitada por `connect_permission_request`), y el reinicio del updater es `AppHandle::restart` de Tauri core
 - `webkit2gtk` v2 (Linux) — corrección ortográfica + devtools en producción
 - `glib` v0.18 + `gtk` v0.18 (Linux) — señales GTK para interceptar drag & drop a nivel nativo (ya eran transitivas vía webkit2gtk; se agregan como deps directas para usar `WidgetExt::connect_drag_data_received`)
 - `mime_guess` — detección de MIME type para archivos arrastrados desde el SO
