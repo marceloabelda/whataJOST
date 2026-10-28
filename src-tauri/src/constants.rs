@@ -9,10 +9,6 @@ pub const MAX_LOG_ENTRIES: usize = 500;
 // ============================================================================
 // Ventanas
 // ============================================================================
-/// Delay en ms esperado para que la ventana de WhatsApp se cargue
-/// antes de poder navegar a una URL (usado en deep links)
-pub const DEEP_LINK_NAVIGATION_DELAY_MS: u64 = 800;
-
 /// Delay en ms antes de quitar `always_on_top` después de mostrar la ventana
 /// (algunos WMs ignoran `set_focus()` si la ventana no es top-level un instante)
 pub const GTK_WINDOW_RESTORE_DELAY_MS: u64 = 150;

@@ -21,7 +21,9 @@ Para cada tarea, seguí estos pasos en orden:
 
 ### Script inyectado (`initialization_script` en `create_whatsapp_window`)
 
-El script se inyecta con `WebviewWindowBuilder::initialization_script` (lib.rs:449). Corre antes de que cargue cualquier JS de WhatsApp Web, dentro de un IIFE para no contaminar el scope global. Establece interceptores permanentes sobre los que WhatsApp Web opera sin saberlo.
+El script se inyecta con `WebviewWindowBuilder::initialization_script` en `create_whatsapp_window_impl`. Corre antes de que cargue cualquier JS de WhatsApp Web, dentro de un IIFE para no contaminar el scope global. Establece interceptores permanentes sobre los que WhatsApp Web opera sin saberlo.
+
+> Este documento no usa números de línea (se desactualizan con cada cambio): para ubicar algo, buscar por nombre de función o variable con `grep -n`.
 
 ---
 
@@ -33,19 +35,19 @@ El script se inyecta con `WebviewWindowBuilder::initialization_script` (lib.rs:4
 
 **El problema:** WebKit2GTK no puede abrir el diálogo nativo de guardado desde JS. Hay que interceptar el blob antes de que el navegador intente descargarlo.
 
-**`blobStore` (lib.rs:536):** Sobrescribe `URL.createObjectURL` para guardar cada `blob:URL → Blob` en un `Map`. Sobrescribe `URL.revokeObjectURL` para eliminar la entrada **60 segundos después** (no inmediatamente): si WhatsApp revoca la URL antes de que `FileReader` termine de leer, el blob sigue disponible. Sin este delay, la descarga falla en archivos grandes.
+**`blobStore`:** Sobrescribe `URL.createObjectURL` para guardar cada `blob:URL → Blob` en un `Map`. Sobrescribe `URL.revokeObjectURL` para eliminar la entrada **60 segundos después** (no inmediatamente): si WhatsApp revoca la URL antes de que `FileReader` termine de leer, el blob sigue disponible. Sin este delay, la descarga falla en archivos grandes.
 
 **Tres puntos de intercepción JS (el primero que aplica dispara `downloadBlob`):**
 
-1. **`HTMLAnchorElement.prototype.click` (lib.rs:608):** Intercepta `.click()` programáticos. Si `this.href` empieza con `blob:`, llama `downloadBlob(url, this.download || 'archivo')` y retorna sin propagar. Cubre el camino más frecuente — WhatsApp Web crea el `<a>` y llama `.click()`.
+1. **`HTMLAnchorElement.prototype.click`:** Intercepta `.click()` programáticos. Si `this.href` empieza con `blob:`, llama `downloadBlob(url, this.download || 'archivo')` y retorna sin propagar. Cubre el camino más frecuente — WhatsApp Web crea el `<a>` y llama `.click()`.
 
-2. **`document.addEventListener('click', capture, lib.rs:623):** Intercepta clics del usuario en `<a href="blob:...">` ya presentes en el DOM (botón de descarga visible). Llama `preventDefault` + `stopImmediatePropagation` y desvía a `downloadBlob`. También intercepta clics en links externos no-WhatsApp y los abre con `window.location.href`.
+2. **`document.addEventListener('click', …, true)` (capture phase):** Intercepta clics del usuario en `<a href="blob:...">` ya presentes en el DOM (botón de descarga visible). Llama `preventDefault` + `stopImmediatePropagation` y desvía a `downloadBlob`. También intercepta clics en links externos no-WhatsApp y los abre con `window.location.href`.
 
-3. **`window.open` override (lib.rs:508):** Algunos flujos de exportación de WhatsApp usan `window.open(blobUrl)` en lugar de `<a>`. Se intercepta y redirige a `downloadBlob`.
+3. **`window.open` override:** Algunos flujos de exportación de WhatsApp usan `window.open(blobUrl)` en lugar de `<a>`. Se intercepta y redirige a `downloadBlob`.
 
-**Cuarta intercepción Rust — `on_navigation` para `blob:` (lib.rs:376):** Si ninguno de los anteriores capturó el blob y WebKit intenta navegar a la `blob:` URL, Rust cancela la navegación (`return false`) y llama `window.__waDownloadBlob(url)` via `win.eval(...)`. `window.__waDownloadBlob` (lib.rs:604) es el alias global que expone `downloadBlob` para que Rust pueda llamarla.
+**Cuarta intercepción Rust — `on_navigation` para `blob:` (`on_navigation` en `create_whatsapp_window_impl`):** Si ninguno de los anteriores capturó el blob y WebKit intenta navegar a la `blob:` URL, Rust cancela la navegación (`return false`) y llama `window.__waDownloadBlob(url)` via `win.eval(...)`. `window.__waDownloadBlob` es el alias global que expone `downloadBlob` para que Rust pueda llamarla.
 
-**`downloadBlob(url, fileName)` (lib.rs:571):**
+**`downloadBlob(url, fileName)`:**
 1. Busca el blob en `blobStore`. Si no está (revocado hace >60 s), hace `fetch(url)` para leerlo desde WebKit.
 2. Llama `saveBlob(blob, fileName)`.
 
@@ -71,9 +73,9 @@ El script se inyecta con `WebviewWindowBuilder::initialization_script` (lib.rs:4
 
 **El problema original:** clickear "descargar" dentro del visor de PDF de WhatsApp Web podía colgar la app intermitentemente. La hipótesis inicial (visor nativo embebido de WebKit2GTK interceptado a nivel `decide-policy`/`download-started`) resultó **incorrecta** tras inspeccionar los logs reales: WhatsApp Web no le pasa el PDF a WebKit como una respuesta HTTP `application/pdf` — abre su propio visor, una app HTML/JS servida en un iframe sandbox (`https://webtp.whatsapp.net/pdf-viewer`, `mime=text/html`). El botón "Descargar" de ese visor **no vive dentro del iframe**: es parte del DOM del frame top (`web.whatsapp.com`), y su click ya caía en el mecanismo de blobs existente (sección "Descargas" más arriba: `HTMLAnchorElement.prototype.click` override → `downloadBlob` → `saveBlob` → IPC `save_file`). El cuelgue original no tenía relación con el visor nativo de WebKit; el fix real fue mucho más simple de lo que se pensó al principio.
 
-**Toggle en el tray:** "Descargar PDF abre con visor externo" (`CheckMenuItem` id `toggle_pdf_reader`, `build_tray_menu` lib.rs:~1418). Estado en `PdfExternalReaderState` (lib.rs:1185, `Mutex<bool>`), persistido en `config.json` como `pdf_external_reader` (default `false`) vía `load_pdf_external_reader`/`save_pdf_external_reader` (lib.rs:~1236-1247).
+**Toggle en el tray:** "Descargar PDF abre con visor externo" (`CheckMenuItem` id `toggle_pdf_reader`, `build_tray_menu`). Estado en `PdfExternalReaderState` (`Mutex<bool>`), persistido en `config.json` como `pdf_external_reader` (default `false`) vía `load_pdf_external_reader`/`save_pdf_external_reader`.
 
-**Mecanismo (todo dentro de `save_file`, lib.rs:~1628):** el flujo de blobs ya existente termina siempre invocando la IPC `save_file(id, file_name)`, sin importar si el blob viene de un documento, una imagen o cualquier otro archivo. Al principio de `save_file`, si `file_name` termina en `.pdf` (case-insensitive) **y** el toggle está activo:
+**Mecanismo (todo dentro de `save_file`,):** el flujo de blobs ya existente termina siempre invocando la IPC `save_file(id, file_name)`, sin importar si el blob viene de un documento, una imagen o cualquier otro archivo. Al principio de `save_file`, si `file_name` termina en `.pdf` (case-insensitive) **y** el toggle está activo:
 1. Mueve el temporal directo a `~/Downloads/WhataJOST/<nombre>` (vía `whatajost_downloads_dir`, helper compartido con el fallback normal de `save_file`), evitando pisar archivos existentes con `unique_path` (agrega `(1)`, `(2)`, etc.).
 2. Abre el archivo con `opener().open_path(...)` (con fallback a `xdg-open` en Linux si falla, mismo patrón que "Links externos").
 3. Devuelve el path sin pasar por `rfd::FileDialog` — no aparece ningún diálogo.
@@ -86,17 +88,17 @@ Si el toggle está desactivado, o el archivo no es un PDF, `save_file` sigue su 
 
 #### Paste de imágenes (funciona ✓)
 
-Handler capture-phase en `document` (lib.rs:691). Corre antes que cualquier handler de WhatsApp. Las cuatro ramas se evalúan en orden estricto — no reordenar.
+Handler capture-phase en `document`. Corre antes que cualquier handler de WhatsApp. Las cuatro ramas se evalúan en orden estricto — no reordenar.
 
-**Rama 1 — ya hay archivos (lib.rs:693):** `clipboardData.files.length > 0` → el paste ya trae archivos (archivo real del SO, o paste sintético que generamos nosotros en ramas 2 y 4). Se deja pasar a WhatsApp sin modificar. Esta rama actúa como punto de llegada para los pastes sintéticos que generamos en las otras ramas.
+**Rama 1 — ya hay archivos:** `clipboardData.files.length > 0` → el paste ya trae archivos (archivo real del SO, o paste sintético que generamos nosotros en ramas 2 y 4). Se deja pasar a WhatsApp sin modificar. Esta rama actúa como punto de llegada para los pastes sintéticos que generamos en las otras ramas.
 
-**Rama 2 — imagen en `clipboardData.items` (lib.rs:702):** WebKit2GTK expone la imagen directamente cuando fue copiada dentro del mismo WebView (e.g., captura en WhatsApp Web). Se llama `imageItem.getAsFile()`, se arma un `DataTransfer` con ese `File` y se despacha un `ClipboardEvent` sintético al elemento activo. Ese evento re-entra al handler pero cae en Rama 1 y llega a WhatsApp.
+**Rama 2 — imagen en `clipboardData.items`:** WebKit2GTK expone la imagen directamente cuando fue copiada dentro del mismo WebView (e.g., captura en WhatsApp Web). Se llama `imageItem.getAsFile()`, se arma un `DataTransfer` con ese `File` y se despacha un `ClipboardEvent` sintético al elemento activo. Ese evento re-entra al handler pero cae en Rama 1 y llega a WhatsApp.
 
-**Rama 3 — texto plano (lib.rs:734):** `clipboardData.types` contiene `text/plain` o `text/rtf` → es texto real. Se deja pasar a WhatsApp sin tocar.
+**Rama 3 — texto plano:** `clipboardData.types` contiene `text/plain` o `text/rtf` → es texto real. Se deja pasar a WhatsApp sin tocar.
 
 > **⚠ Por qué `text/html` NO está en la Rama 3:** Firefox/Chrome al copiar una imagen ponen `image/png` en el clipboard del sistema **más** un `<img>` en `text/html` como fallback. WebKit2GTK **no expone** el `image/png` externo en `clipboardData.items`, solo el `text/html`. Si ese HTML se pasara a WhatsApp, lo recibiría como texto HTML, no como imagen. Por eso `text/html` solo → cae a Rama 4 y se trata como posible imagen vía `wl-paste`.
 
-**Rama 4 — sin texto / sin archivos / sin imagen (lib.rs:742):** Cubre `text/html` solo, clipboard vacío, imagen de app externa (Firefox, GIMP, etc.). Pasos:
+**Rama 4 — sin texto / sin archivos / sin imagen:** Cubre `text/html` solo, clipboard vacío, imagen de app externa (Firefox, GIMP, etc.). Pasos:
 1. Detener el evento **sincrónicamente** con `preventDefault` + `stopImmediatePropagation` **antes de cualquier `await`**. Si se esperara, WhatsApp procesaría el paste vacío mientras llega la respuesta IPC.
 2. Invocar `read_clipboard_image` IPC → Rust llama `wl-paste --type image/png|jpeg|bmp|webp` (o `xclip`). La herramienta disponible se detecta la primera vez y se guarda en `OnceLock` para no repetir la detección.
 3. Si devuelve `null` → log de warning, no se pega nada.
@@ -112,29 +114,29 @@ Handler capture-phase en `document` (lib.rs:691). Corre antes que cualquier hand
 
 **Cuatro capas. La Capa 1 es la que realmente funciona en Wayland; las demás son fallbacks para otros entornos.**
 
-**Capa 1 — GTK `drag-data-received` (Rust, lib.rs:1032) — capa primaria:**
+**Capa 1 — GTK `drag-data-received` (Rust, `with_webview` en `create_whatsapp_window_impl`) — capa primaria:**
 Usando `window.with_webview`, se llama `widget.drag_dest_add_uri_targets()` (trait `gtk::prelude::WidgetExt`) para registrar `text/uri-list` como tipo aceptado (aditivo, no reemplaza la configuración interna de WebKit). Luego se conecta `widget.connect_drag_data_received(...)`. El handler:
 1. Extrae URIs de `gtk::SelectionData` → `Vec<glib::GString>`.
 2. Lanza un `std::thread::spawn` (para no bloquear el loop GTK; sin esto la UI se congela).
-3. Por cada URI `file://`: llama `decode_file_uri(uri)` (lib.rs:1150, percent-decoding UTF-8), lee el archivo con `std::fs::read`, detecta MIME con `mime_guess`, codifica en base64.
+3. Por cada URI `file://`: llama `decode_file_uri(uri)` (percent-decoding UTF-8), lee el archivo con `std::fs::read`, detecta MIME con `mime_guess`, codifica en base64.
 4. Llama `window.__tauriInjectDrop(name, b64, mime)` vía `win.eval()`.
 
-**Capa 2 — DOM `drop` event (lib.rs:819, capture phase):**
-Fallback para X11 o WebKit que sí expone archivos al DOM. Si `dataTransfer.files.length > 0` → arma `DataTransfer` y llama `dispatchPasteWithFiles(dt)`. Si `files` está vacío → lee `text/uri-list`: para `file://` invoca `read_file_for_drop` IPC (lib.rs:1418); para `https://` hace `fetch`. Luego llama `dispatchPasteWithFiles(dt)`.
+**Capa 2 — DOM `drop` event (capture phase):**
+Fallback para X11 o WebKit que sí expone archivos al DOM. Si `dataTransfer.files.length > 0` → arma `DataTransfer` y llama `dispatchPasteWithFiles(dt)`. Si `files` está vacío → lee `text/uri-list`: para `file://` invoca `read_file_for_drop` IPC; para `https://` hace `fetch`. Luego llama `dispatchPasteWithFiles(dt)`.
 
-**Capa 3 — Tauri `DragDropEvent` (Rust, lib.rs:1088, `on_webview_event`):**
+**Capa 3 — Tauri `DragDropEvent` (Rust, `on_webview_event`):**
 Fallback para plataformas donde Tauri intercepta el drop antes del WebView. Lee los paths, detecta MIME con `mime_guess`, codifica en base64, y llama `window.dispatchPasteWithFiles(dt)` via `eval()`.
 
-**Capa 4 — `on_navigation file://` (Rust, lib.rs:390):**
+**Capa 4 — `on_navigation file://` (Rust, `on_navigation`):**
 Si WebKit intenta navegar a `file://` (comportamiento de X11 antiguo): Rust cancela la navegación, lee el archivo, llama `window.__tauriInjectDrop`. Log con prefijo `on_navigation file:// (fallback):` para distinguirlo de Capa 1 en los logs.
 
 **Funciones JS que unen todo:**
 
-**`window.__tauriInjectDrop(fileName, base64Data, mimeType)` (lib.rs:968):**
+**`window.__tauriInjectDrop(fileName, base64Data, mimeType)`:**
 Convierte base64 → `Uint8Array` → `Blob` → `File`, lo agrega a un `DataTransfer` nuevo y llama `dispatchPasteWithFiles(dt)`. Es el puente entre el código Rust (que leyó el archivo del sistema) y el DOM de WhatsApp.
 
-**`window.dispatchPasteWithFiles(dt)` (lib.rs:482):**
-Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEditable` (lib.rs:478) como target — se rastrea el último elemento editable que recibió foco en capture phase, porque durante el drag el foco puede haberse ido a `document.body`. Si el target no es `document.body`, llama `.focus()` antes de despachar. WhatsApp Web acepta `ClipboardEvent` sintéticos con `clipboardData.files`, los procesa como un paste real.
+**`window.dispatchPasteWithFiles(dt)`:**
+Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEditable` como target — se rastrea el último elemento editable que recibió foco en capture phase, porque durante el drag el foco puede haberse ido a `document.body`. Si el target no es `document.body`, llama `.focus()` antes de despachar. WhatsApp Web acepta `ClipboardEvent` sintéticos con `clipboardData.files`, los procesa como un paste real.
 
 > **⚠ Por qué se usa `paste` en lugar de `drop`:** WhatsApp Web tiene `isTrusted` checks en sus handlers de drag que bloquean eventos sintéticos. Los `ClipboardEvent` sintéticos no tienen ese check.
 
@@ -142,33 +144,33 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 
 ---
 
-- **Links externos (lib.rs:508, 623):** `window.open` override + `document.addEventListener('click', capture)` redirigen URLs no-WhatsApp a `window.location.href` → `on_navigation` las abre con `opener.open_url()` del plugin opener. Si `open_url()` falla, se lanza `xdg-open <url>` directamente como fallback (lib.rs:437). Ambos intentos quedan en los logs.
+- **Links externos:** `window.open` override + `document.addEventListener('click', capture)` redirigen URLs no-WhatsApp a `window.location.href` → `on_navigation` las abre con `opener.open_url()` del plugin opener. Si `open_url()` falla, se lanza `xdg-open <url>` directamente como fallback. Ambos intentos quedan en los logs.
 
 - **Deep links `whatsapp://` (funciona ✓):**
   El sistema operativo puede abrir WhataJOST cuando el usuario hace clic en un link `whatsapp://send?phone=...` en el browser o en otra app.
 
   **Registro del protocolo:** `public/whatajost-url-handler.desktop` declara `MimeType=x-scheme-handler/whatsapp;` con `NoDisplay=true` (no aparece en lanzadores). El deb/rpm lo instala en `/usr/share/applications/` vía `bundle.linux.deb.files` en `tauri.conf.json`. El post-install corre `update-desktop-database` que lo activa como handler del sistema.
 
-  **`handle_deep_link(app, url)` (Rust):** Convierte `whatsapp://path?query` → `https://web.whatsapp.com/path?query` (strip de `whatsapp://`, prepend de la base). Llama `show_window`, luego lanza un thread que espera 800 ms y evalúa `window.location.href = "<url>"` en la ventana `whatsapp-web`. El delay es necesario: si la app estaba cerrada, la ventana necesita tiempo para cargar `web.whatsapp.com` antes de poder navegar.
+  **`handle_deep_link(app, url)` (Rust):** Convierte `whatsapp://path?query` → `https://web.whatsapp.com/path?query` (strip de `whatsapp://`, prepend de la base) y llama `show_window`. La navegación (`navigate_whatsapp`, vía `WebviewWindow::navigate`) **no usa esperas fijas**: `DEEP_LINK_STATE` (`Mutex<(cargada, pendiente)>`) guarda si la ventana `whatsapp-web` ya terminó de cargar. Si ya cargó, navega en el acto; si no, deja la URL pendiente y la navega `on_whatsapp_loaded`, que se llama desde `on_page_load` (`PageLoadEvent::Finished`) de esa ventana. Las dos cosas van bajo el mismo lock para que no haya carrera entre "terminó de cargar" y "llegó el link". Antes había un `sleep` de 5 s al arrancar más 800 ms antes de navegar: en máquinas lentas el link se perdía y en rápidas sobraba.
 
   **Dos rutas de entrada:**
   1. **App ya corriendo** — `tauri_plugin_single_instance` callback: el nuevo proceso le pasa `args` al proceso ya en marcha; si hay una URL `whatsapp://` en los args, se llama `handle_deep_link`.
-  2. **Primera apertura** — `setup()`: lee `std::env::args()`, si encuentra `whatsapp://` lanza un thread que espera 5 s (para que la app cargue completamente) y llama `handle_deep_link`.
-- **Menú contextual (lib.rs:674):** Handlers capture-phase en `contextmenu`/`mousedown`/`mouseup` bloquean los listeners de WhatsApp en campos editables (`isContentEditable`, `INPUT`, `TEXTAREA`) → aparece el menú nativo de WebKitGTK con corrección ortográfica.
+  2. **Primera apertura** — `setup()`: lee `std::env::args()` y, si encuentra `whatsapp://`, llama `handle_deep_link` directamente (la ventana ya fue creada; el link queda pendiente hasta que cargue).
+- **Menú contextual:** Handlers capture-phase en `contextmenu`/`mousedown`/`mouseup` bloquean los listeners de WhatsApp en campos editables (`isContentEditable`, `INPUT`, `TEXTAREA`) → aparece el menú nativo de WebKitGTK con corrección ortográfica.
 - **Badge no leídos:** `MutationObserver` en `<title>` parsea `(N) WhatsApp` y llama `update_unread_count` IPC (solo si el número cambió). Hasta que aparece el `<title>`, un observer temporal mira el DOM completo y **se desconecta apenas lo encuentra** — dejarlo conectado lo dispararía con cada mutación de WhatsApp durante toda la sesión. Un `setInterval` de 30 s funciona de red de seguridad: si WhatsApp reemplazó el elemento `<title>`, re-engancha el observer.
 - **Notificaciones:** Reemplaza `window.Notification` con `show_notification` IPC. `Notification.permission` devuelve `'granted'` permanentemente. `show_notification_internal` (Rust) elige según plataforma:
-  - **Linux — notificación nativa** (`show_native_notification`, crate `notify-rust` vía D-Bus): el escritorio la ubica y respeta "No molestar"; click → `show_window`. Todas reusan el mismo id (`replaces_id`), así se ve solo la última (como el toast) y alcanza con **un único thread** bloqueado en `wait_for_action` (cubre las notificaciones que reemplazan a la primera); al clickear o descartar, se resetea el id. Se pasó a nativas porque en Wayland las apps no pueden posicionar ventanas: el toast HTML salía centrado.
+  - **Linux — notificación nativa** (`show_native_notification`, crate `notify-rust` vía D-Bus): el escritorio la ubica y respeta "No molestar"; click → `show_window` (o `show_window_2`). Las de la cuenta 2 llevan "(Cuenta 2)" en el título (el comando `show_notification` recibe la `WebviewWindow` que lo invocó y mira su label). Cada cuenta tiene su propio `NativeNotifSlot`; dentro de una cuenta todas reusan el mismo id (`replaces_id`), así se ve solo la última (como el toast) y alcanza con **un único thread** bloqueado en `wait_for_action` (cubre las notificaciones que reemplazan a la primera); al clickear o descartar, se resetea el id. Se pasó a nativas porque en Wayland las apps no pueden posicionar ventanas: el toast HTML salía centrado.
   - **Otras plataformas — toast HTML** (`show_toast_notification`): reusa la ventana `notification` entre toasts en vez de destruirla y recrearla: si ya existe, navega su contenido con `window.location.replace(...)` y la reposiciona/muestra; si no, la crea. `close_notification` y `open_whatsapp` la ocultan (`hide`) en vez de cerrarla. Un contador de generación (`NotificationGenState`) evita que el auto-cierre diferido (5,5 s) de un toast viejo oculte uno más nuevo que reusó la misma ventana.
   - **`target_monitor`**: el toast y la ventana de logs se ubican con `primary_monitor()`, que en Wayland devuelve `None` (no existe "monitor principal"). Fallback: monitor de la ventana `whatsapp-web`, o el primero disponible. Antes de este fallback el toast se descartaba sin loggear en Wayland.
 - **Modelo de caché de WebKit:** `context.set_cache_model(CacheModel::DocumentViewer)` (en `create_whatsapp_window_impl`, junto a la corrección ortográfica). Desactiva la caché en memoria de recursos HTTP. Medido con A/B en uso real: ~1.210 MB → ~1.084 MB (~125 MB menos, ~10%) sin diferencia de fluidez notable — WhatsApp guarda sus datos en IndexedDB/service worker, no en esa caché. Los límites de memoria de WebKit (`MemoryPressureSettings`) no son configurables sin forkear wry: solo se pueden pasar al construir el `WebContext`, y eso lo hace wry internamente.
-- **User agent (lib.rs:369):** La ventana `whatsapp-web` usa un UA de Chrome/Linux para que WhatsApp Web no detecte un navegador desconocido y bloquee el acceso.
+- **User agent:** La ventana `whatsapp-web` usa un UA de Chrome/Linux para que WhatsApp Web no detecte un navegador desconocido y bloquee el acceso.
 - **Segunda cuenta al inicio (arranque):** Si `account2_visible` está en `true`, `create_whatsapp_window_2` se lanza en un `std::thread::spawn` dentro de `setup()` en vez de llamarse sincrónicamente. Crear el segundo contexto WebKit ahí adentro bloquearía el armado del tray y el registro del atajo global (Win+Alt+W) hasta que termine. Al togglear la cuenta 2 desde el tray en caliente sí se llama sincrónico (ya no está en el path crítico de arranque).
 
 ---
 
 #### Comportamientos Rust
 
-**Cierre de ventana → hide (lib.rs:1080):**
+**Cierre de ventana → hide (`on_window_event`):**
 `on_window_event` con `CloseRequested` llama `api.prevent_close()` + `window.hide()`. La ventana de WhatsApp nunca se destruye; solo se oculta. Esto es intencional: destruirla y recrearla es lento y pierde la sesión si el proceso WebKit muere.
 
 **`show_window`:** Llama `unminimize()` → `set_always_on_top(true)` → `show()` → `set_focus()` → (150 ms después, en otro thread) `set_always_on_top(false)`. El truco `always_on_top` es necesario en algunos WMs (ej. i3, algunos GNOME) que ignoran `set_focus()` sin que la ventana sea temporalmente top-level.

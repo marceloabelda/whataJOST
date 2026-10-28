@@ -87,6 +87,12 @@ fn log_message(app: &AppHandle, level: LogLevel, message: impl Into<String>) {
     }
 }
 
+/// Estado de carga de la ventana `whatsapp-web` y deep link pendiente.
+/// Van bajo el mismo lock para que no haya carrera entre "terminó de cargar"
+/// y "llegó un deep link": o lo navega `handle_deep_link` (ya cargó) o lo
+/// toma `on_page_load` (todavía no).
+static DEEP_LINK_STATE: Mutex<(bool, Option<String>)> = Mutex::new((false, None));
+
 fn handle_deep_link(app: &AppHandle, url: &str) {
     // whatsapp://send?phone=5491112345678 → https://web.whatsapp.com/send?phone=5491112345678
     let web_url = format!(
@@ -95,20 +101,50 @@ fn handle_deep_link(app: &AppHandle, url: &str) {
     );
     log_message(app, LogLevel::Info, format!("Deep link: {} → {}", url, web_url));
     show_window(app);
-    let app2 = app.clone();
-    std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(DEEP_LINK_NAVIGATION_DELAY_MS));
-        if let Some(win) = app2.get_webview_window("whatsapp-web") {
-            let js = match serde_json::to_string(&web_url) {
-                Ok(url_json) => format!("window.location.href = {};", url_json),
-                Err(e) => {
-                    eprintln!("[deep_link] JSON serialization failed: {}", e);
-                    return;
-                }
-            };
-            let _ = win.eval(&js);
+    let loaded = match DEEP_LINK_STATE.lock() {
+        Ok(mut state) => {
+            if !state.0 {
+                state.1 = Some(web_url.clone());
+            }
+            state.0
         }
-    });
+        Err(e) => {
+            eprintln!("[deep_link] DEEP_LINK_STATE poisoned: {}", e);
+            return;
+        }
+    };
+    if loaded {
+        navigate_whatsapp(app, &web_url);
+    } else {
+        log_message(app, LogLevel::Info, "Deep link en espera hasta que cargue WhatsApp Web");
+    }
+}
+
+/// Llamado desde `on_page_load` cuando la ventana `whatsapp-web` termina de
+/// cargar: marca la ventana como lista y navega el deep link pendiente, si hay.
+fn on_whatsapp_loaded(app: &AppHandle) {
+    let pending = match DEEP_LINK_STATE.lock() {
+        Ok(mut state) => {
+            state.0 = true;
+            state.1.take()
+        }
+        Err(_) => None,
+    };
+    if let Some(url) = pending {
+        navigate_whatsapp(app, &url);
+    }
+}
+
+fn navigate_whatsapp(app: &AppHandle, url: &str) {
+    let Some(win) = app.get_webview_window("whatsapp-web") else { return };
+    match url.parse() {
+        Ok(parsed) => {
+            if let Err(e) = win.navigate(parsed) {
+                log_message(app, LogLevel::Error, format!("Deep link: error al navegar: {e}"));
+            }
+        }
+        Err(e) => log_message(app, LogLevel::Error, format!("Deep link: URL inválida {url}: {e}")),
+    }
 }
 
 fn show_window(app: &AppHandle) {
@@ -452,6 +488,11 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
     .visible(false)
     .focused(false)
     .user_agent("Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36")
+    .on_page_load(|win, payload| {
+        if win.label() == "whatsapp-web" && payload.event() == tauri::webview::PageLoadEvent::Finished {
+            on_whatsapp_loaded(win.app_handle());
+        }
+    })
     .on_navigation(move |url| {
         let scheme = url.scheme();
         if scheme == "data" || scheme == "about" {
@@ -1745,10 +1786,26 @@ fn target_monitor(app: &AppHandle) -> Option<tauri::Monitor> {
 /// solo la última, igual que el toast. Gracias a eso alcanza con un único
 /// thread esperando el click — se queda en `wait_for_action` hasta que el
 /// usuario clickea o descarta la notificación, y cubre las que la reemplazan.
+/// Slot de notificación nativa por cuenta: id a reemplazar y si ya hay un
+/// thread esperando el click. Cada cuenta tiene el suyo para que un mensaje
+/// de una no tape la notificación de la otra.
 #[cfg(target_os = "linux")]
-fn show_native_notification(app: &AppHandle, title: &str, body: &str) {
-    static NATIVE_NOTIF_ID: Mutex<Option<u32>> = Mutex::new(None);
-    static NATIVE_NOTIF_WAITING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+struct NativeNotifSlot {
+    id: Mutex<Option<u32>>,
+    waiting: std::sync::atomic::AtomicBool,
+}
+
+#[cfg(target_os = "linux")]
+impl NativeNotifSlot {
+    const fn new() -> Self {
+        Self { id: Mutex::new(None), waiting: std::sync::atomic::AtomicBool::new(false) }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn show_native_notification(app: &AppHandle, account2: bool, title: &str, body: &str) {
+    static SLOTS: [NativeNotifSlot; 2] = [NativeNotifSlot::new(), NativeNotifSlot::new()];
+    let slot = &SLOTS[account2 as usize];
 
     let mut notification = notify_rust::Notification::new();
     notification
@@ -1758,7 +1815,7 @@ fn show_native_notification(app: &AppHandle, title: &str, body: &str) {
         .icon("whatajost")
         .hint(notify_rust::Hint::DesktopEntry("whataJOST".to_string()))
         .action("default", "Abrir WhatsApp");
-    if let Some(id) = NATIVE_NOTIF_ID.lock().ok().and_then(|g| *g) {
+    if let Some(id) = slot.id.lock().ok().and_then(|g| *g) {
         notification.id(id);
     }
     let handle = match notification.show() {
@@ -1768,35 +1825,38 @@ fn show_native_notification(app: &AppHandle, title: &str, body: &str) {
             return;
         }
     };
-    if let Ok(mut g) = NATIVE_NOTIF_ID.lock() {
+    if let Ok(mut g) = slot.id.lock() {
         *g = Some(handle.id());
     }
-    if NATIVE_NOTIF_WAITING.swap(true, Ordering::SeqCst) {
+    if slot.waiting.swap(true, Ordering::SeqCst) {
         return; // ya hay un thread esperando el click sobre este id
     }
     let app = app.clone();
     std::thread::spawn(move || {
         handle.wait_for_action(|action| {
             if action == "default" {
-                show_window(&app);
+                if account2 { show_window_2(&app) } else { show_window(&app) }
             }
         });
         // Clickeada o descartada: la próxima notificación usa un id nuevo.
-        if let Ok(mut g) = NATIVE_NOTIF_ID.lock() {
+        if let Ok(mut g) = slot.id.lock() {
             *g = None;
         }
-        NATIVE_NOTIF_WAITING.store(false, Ordering::SeqCst);
+        slot.waiting.store(false, Ordering::SeqCst);
     });
 }
 
-fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
+fn show_notification_internal(app: &AppHandle, account2: bool, title: &str, body: &str) {
     #[cfg(target_os = "linux")]
     {
-        show_native_notification(app, title, body);
+        show_native_notification(app, account2, title, body);
         return;
     }
     #[cfg(not(target_os = "linux"))]
-    show_toast_notification(app, title, body);
+    {
+        let _ = account2;
+        show_toast_notification(app, title, body);
+    }
 }
 
 /// Toast HTML propio (ventana `notification`). Se usa fuera de Linux.
@@ -1857,7 +1917,7 @@ fn show_toast_notification(app: &AppHandle, title: &str, body: &str) {
 }
 
 #[tauri::command]
-fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, title: String, body: String) {
+fn show_notification(app: AppHandle, window: tauri::WebviewWindow, state: State<'_, NotificationPopupState>, title: String, body: String) {
     let is_enabled = state
         .0
         .lock()
@@ -1869,7 +1929,9 @@ fn show_notification(app: AppHandle, state: State<'_, NotificationPopupState>, t
     if !is_enabled {
         return;
     }
-    show_notification_internal(&app, &title, &body);
+    let account2 = window.label() == "whatsapp-web-2";
+    let title = if account2 { format!("{title} (Cuenta 2)") } else { title };
+    show_notification_internal(&app, account2, &title, &body);
 }
 
 #[tauri::command]
@@ -2190,11 +2252,9 @@ pub fn run() {
                 .skip(1)
                 .find(|a| a.starts_with("whatsapp://"));
             if let Some(url) = launch_url {
-                let handle = app.handle().clone();
-                std::thread::spawn(move || {
-                    std::thread::sleep(Duration::from_secs(5));
-                    handle_deep_link(&handle, &url);
-                });
+                // La ventana ya existe; si WhatsApp todavía no cargó, el link
+                // queda pendiente y lo navega on_page_load.
+                handle_deep_link(app.handle(), &url);
             }
 
             let icon = Image::from_bytes(include_bytes!("../../public/tray.png"))?;
