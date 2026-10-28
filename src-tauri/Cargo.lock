@@ -5068,7 +5068,7 @@ dependencies = [
 
 [[package]]
 name = "whatajost"
-version = "1.2.16"
+version = "1.2.17"
 dependencies = [
  "base64 0.22.1",
  "glib",
