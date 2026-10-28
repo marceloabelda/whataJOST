@@ -50,20 +50,9 @@ pub const TRAY_BADGE_FONT_SCALE: u32 = 2;
 pub const TRAY_BADGE_RED: u8 = 255;
 pub const TRAY_BADGE_GREEN: u8 = 0;
 pub const TRAY_BADGE_BLUE: u8 = 0;
-pub const TRAY_BADGE_ALPHA: u8 = 255;
 
 // ============================================================================
 // URLs y hosts
 // ============================================================================
 /// URL base de WhatsApp Web
 pub const WHATSAPP_WEB_URL: &str = "https://web.whatsapp.com/";
-
-/// Host del visor de PDF de WhatsApp
-pub const WHATSAPP_PDF_VIEWER_HOST: &str = "webtp.whatsapp.net";
-
-// ============================================================================
-// Blob storage (JavaScript)
-// ============================================================================
-/// Delay en ms antes de revocar un blob almacenado
-/// (necesario para que FileReader termine de leer archivos grandes)
-pub const BLOB_REVOCATION_DELAY_MS: u64 = 60000; // 60 segundos

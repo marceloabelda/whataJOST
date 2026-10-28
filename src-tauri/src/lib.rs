@@ -1054,6 +1054,7 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
             (function() {
                 let lastCount = -1;
                 let titleObs = null;
+                let titleObsTarget = null;
                 function checkCount() {
                     const title = document.title;
                     const m = title.match(/^\((\d+)\)/);
@@ -1067,15 +1068,33 @@ fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir: Option<st
                     const titleEl = document.querySelector('title');
                     if (titleEl && !titleObs) {
                         titleObs = new MutationObserver(checkCount);
+                        titleObsTarget = titleEl;
                         titleObs.observe(titleEl, { childList: true, characterData: true, subtree: true });
                         checkCount();
                     }
                 }
-                // Observe <head> for when WhatsApp inserts its <title>
-                const headObs = new MutationObserver(attachTitleObserver);
-                headObs.observe(document.documentElement, { childList: true, subtree: true });
+                // Observe the document until WhatsApp inserts its <title>, then
+                // disconnect: a subtree observer on the whole DOM would otherwise
+                // fire on every WhatsApp mutation for the whole session.
                 attachTitleObserver();
-                setInterval(checkCount, 2500);
+                if (!titleObs) {
+                    const headObs = new MutationObserver(function() {
+                        attachTitleObserver();
+                        if (titleObs) headObs.disconnect();
+                    });
+                    headObs.observe(document.documentElement, { childList: true, subtree: true });
+                }
+                // Safety net in case WhatsApp replaces the <title> element itself
+                // (the observer would stay attached to the detached node).
+                setInterval(function() {
+                    const titleEl = document.querySelector('title');
+                    if (titleObs && titleEl && titleEl !== titleObsTarget) {
+                        titleObs.disconnect();
+                        titleObs = null;
+                        attachTitleObserver();
+                    }
+                    checkCount();
+                }, 30000);
             })();
 
             // --- Drag & drop: prevent WebView from intercepting file drops as navigation ---
@@ -1766,7 +1785,7 @@ fn show_notification_internal(app: &AppHandle, title: &str, body: &str) {
 
     let app2 = app.clone();
     std::thread::spawn(move || {
-        std::thread::sleep(Duration::from_millis(5500));
+        std::thread::sleep(Duration::from_millis(NOTIFICATION_DISPLAY_TIME_MS));
         let gen_state = app2.state::<NotificationGenState>();
         if gen_state.0.load(Ordering::SeqCst) == generation {
             if let Some(win) = app2.get_webview_window("notification") {
@@ -2147,14 +2166,13 @@ pub fn run() {
 
             app.manage(tray);
 
-            // Check for updates in background after app starts, then every 10 minutes
-            // TODO: volver a 2 horas (2 * 60 * 60) una vez confirmado que el rechequeo funciona.
+            // Check for updates in background after app starts, then every 2 hours
             let handle = app.handle().clone();
             std::thread::spawn(move || {
-                std::thread::sleep(Duration::from_secs(5));
+                std::thread::sleep(Duration::from_millis(FIRST_UPDATE_CHECK_DELAY_MS));
                 loop {
                     check_for_updates_impl(&handle, true);
-                    std::thread::sleep(Duration::from_secs(10 * 60));
+                    std::thread::sleep(Duration::from_secs(UPDATE_CHECK_INTERVAL_SECS));
                 }
             });
 
