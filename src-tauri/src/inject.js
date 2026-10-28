@@ -1,5 +1,5 @@
 // Script inyectado en las ventanas de WhatsApp Web (initialization_script en
-// create_whatsapp_window_impl, lib.rs). Corre antes que cualquier JS de
+// create_whatsapp_window_impl, window.rs). Corre antes que cualquier JS de
 // WhatsApp. Se embebe en el binario con include_str!; CI valida la sintaxis
 // con `node --check`. Ver CLAUDE.md, sección "Script inyectado".
 (function() {

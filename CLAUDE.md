@@ -13,7 +13,18 @@ Para cada tarea, seguí estos pasos en orden:
 
 ## Architecture
 
-- `src-tauri/src/lib.rs` — Lógica principal: ventana WhatsApp, comandos Tauri, bandeja, notificaciones, updater
+- `src-tauri/src/lib.rs` — Solo `run()`: registro de plugins y comandos (`generate_handler!`), `setup()` (estados, ventanas, tray, updater, atajo global) y eventos de ventana. Declara los módulos y los re-importa con `use modulo::*;`
+- Módulos (cada uno arranca con `use super::*;` para ver los imports y los ítems de los demás; lo que se comparte entre módulos es `pub(crate)`):
+  - `window.rs` — creación de las ventanas WhatsApp (`create_whatsapp_window_impl`: `on_navigation`, `on_page_load`, drag & drop GTK, ajustes WebKit), `show_window*`, deep links, `target_monitor`, comando `open_whatsapp`
+  - `tray.rs` — menú del tray (`build_tray_menu`), badge pixel art (`regenerate_tray_icon`), comando `update_unread_count`
+  - `notifications.rs` — notificaciones nativas (Linux), toast HTML (otras plataformas), comandos `show_notification`/`close_notification`
+  - `downloads.rs` — descargas en partes (`save_file_*`), `unique_path`, `whatajost_downloads_dir`
+  - `clipboard.rs` — lectura de imágenes del portapapeles (`wl-paste`/`xclip`) y de archivos para drag & drop
+  - `config.rs` — `config.json` (`modify_config`, `load_*`/`save_*`) y estados persistidos
+  - `updater.rs` — `check_for_updates_impl` (cascada de instalación .deb, AppImage, Windows)
+  - `logging.rs` — `log_message`, buffer de logs, comandos de logs y ventana `logs`
+  - `i18n.rs` — textos ES/EN (`t()`)
+- Al agregar un comando IPC: `#[tauri::command] pub(crate) fn` en su módulo, registrarlo en `generate_handler!` con path completo (`modulo::comando`) y sumarlo a `permissions/default.toml`
 - `src-tauri/src/inject.js` — Script inyectado en las ventanas de WhatsApp Web (embebido con `include_str!`)
 - `src-tauri/src/constants.rs` — Constantes de configuración (delays, intervalos, geometría del badge)
 - `.github/workflows/check.yml` — Chequeos (sintaxis de `inject.js` + clippy); `release.yml` — build y publicación
