@@ -132,22 +132,22 @@ Handler capture-phase en `document`. Corre antes que cualquier handler de WhatsA
 Usando `window.with_webview`, se llama `widget.drag_dest_add_uri_targets()` (trait `gtk::prelude::WidgetExt`) para registrar `text/uri-list` como tipo aceptado (aditivo, no reemplaza la configuración interna de WebKit). Luego se conecta `widget.connect_drag_data_received(...)`. El handler:
 1. Extrae URIs de `gtk::SelectionData` → `Vec<glib::GString>`.
 2. Lanza un `std::thread::spawn` (para no bloquear el loop GTK; sin esto la UI se congela).
-3. Por cada URI `file://`: llama `decode_file_uri(uri)` (percent-decoding UTF-8), lee el archivo con `std::fs::read`, detecta MIME con `mime_guess`, codifica en base64.
-4. Llama `window.__tauriInjectDrop(name, b64, mime)` vía `win.eval()`.
+3. Por cada URI `file://`: llama `decode_file_uri(uri)` (percent-decoding UTF-8) y registra la ruta en `NATIVE_DROPS`.
+4. Llama `inject_files_into_page` (ver "Funciones que unen todo").
 
 **Capa 2 — DOM `drop` event (capture phase):**
 Fallback para X11 o WebKit que sí expone archivos al DOM. Si `dataTransfer.files.length > 0` → arma `DataTransfer` y llama `dispatchPasteWithFiles(dt)`. Si `files` está vacío → lee `text/uri-list`: para `file://` invoca `read_file_for_drop` IPC; para `https://` hace `fetch`. Luego llama `dispatchPasteWithFiles(dt)`.
 
 **Capa 3 — Tauri `DragDropEvent` (Rust, `on_webview_event`):**
-Fallback para plataformas donde Tauri intercepta el drop antes del WebView. Lee los paths, detecta MIME con `mime_guess`, codifica en base64, y llama `window.dispatchPasteWithFiles(dt)` via `eval()`.
+Fallback para plataformas donde Tauri intercepta el drop antes del WebView. Registra los paths (en `Enter` y `Drop`) y llama `inject_files_into_page` desde un thread aparte.
 
 **Capa 4 — `on_navigation file://` (Rust, `on_navigation`):**
-Si WebKit intenta navegar a `file://` (comportamiento de X11 antiguo): Rust cancela la navegación, lee el archivo, llama `window.__tauriInjectDrop`. Log con prefijo `on_navigation file:// (fallback):` para distinguirlo de Capa 1 en los logs.
+Si WebKit intenta navegar a `file://` (comportamiento de X11 antiguo): Rust cancela la navegación y, solo si la ruta vino de un arrastre nativo reciente (`is_native_drop`), llama `inject_files_into_page`. Log con prefijo `on_navigation file:// (fallback):` para distinguirlo de Capa 1 en los logs.
 
-**Funciones JS que unen todo:**
+**Funciones que unen todo:**
 
-**`window.__tauriInjectDrop(fileName, base64Data, mimeType)`:**
-Convierte base64 → `Uint8Array` → `Blob` → `File`, lo agrega a un `DataTransfer` nuevo y llama `dispatchPasteWithFiles(dt)`. Es el puente entre el código Rust (que leyó el archivo del sistema) y el DOM de WhatsApp.
+**`inject_files_into_page(app, win, paths)` (Rust, `clipboard.rs`) + `window.__waDrop*` (JS):**
+Es el puente entre el código Rust (que lee el archivo del sistema) y el DOM de WhatsApp, usado por las capas 1, 3 y 4. Por cada archivo: `__waDropBegin(id, name, mime)`, después lo lee de a `DROP_CHUNK_BYTES` (3 MB) y manda cada trozo con `__waDropChunk(id, b64)` en un `eval` propio; JS decodifica cada trozo a `Uint8Array` al llegar. Al final `__waDropDispatch([ids])` arma un `File` por id (a partir de las partes binarias), los junta en un único `DataTransfer` y llama `dispatchPasteWithFiles(dt)`; si un archivo falla, `__waDropAbort(id)`. Antes era un solo `eval` con el archivo entero en base64: WebKit tenía que parsear un script ~1,33× el tamaño del archivo y un video grande trababa la UI. Llamar siempre desde un thread aparte (lee disco).
 
 **`window.dispatchPasteWithFiles(dt)`:**
 Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEditable` como target — se rastrea el último elemento editable que recibió foco en capture phase, porque durante el drag el foco puede haberse ido a `document.body`. Si el target no es `document.body`, llama `.focus()` antes de despachar. WhatsApp Web acepta `ClipboardEvent` sintéticos con `clipboardData.files`, los procesa como un paste real.

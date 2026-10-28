@@ -544,28 +544,45 @@
     // --- Drag & drop: prevent WebView from intercepting file drops as navigation ---
     document.addEventListener('dragover', function(e) { e.preventDefault(); }, false);
 
-    // Bridge: Rust calls this after reading a dropped file (fallback when
-    // WebKitGTK intercepts the native drop and tries to navigate to a file:// URL).
-    // We dispatch a paste event (not a drop event) because WhatsApp Web accepts
-    // synthetic ClipboardEvents but ignores synthetic DragEvents (isTrusted check).
-    window.__tauriInjectDrop = function(fileName, base64Data, mimeType) {
+    // Bridge: Rust reads files dropped natively (GTK signal, Tauri DragDropEvent
+    // or the file:// navigation fallback) and sends each one in base64 chunks
+    // (__waDropBegin / __waDropChunk), then __waDropDispatch with the ids to
+    // paste together. Chunks are decoded as they arrive, so the page never holds
+    // the whole file as a base64 string. We dispatch a paste event (not a drop
+    // event) because WhatsApp Web accepts synthetic ClipboardEvents but ignores
+    // synthetic DragEvents (isTrusted check).
+    const dropFiles = new Map();
+    window.__waDropBegin = function(id, name, mime) {
+        dropFiles.set(id, { name: name, mime: mime || 'application/octet-stream', parts: [] });
+    };
+    window.__waDropChunk = function(id, b64) {
+        const f = dropFiles.get(id);
+        if (!f) return;
+        const binary = atob(b64);
+        const array = new Uint8Array(binary.length);
+        for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
+        f.parts.push(array);
+    };
+    window.__waDropAbort = function(id) {
+        dropFiles.delete(id);
+    };
+    window.__waDropDispatch = function(ids) {
         try {
+            const dt = new DataTransfer();
+            for (const id of ids) {
+                const f = dropFiles.get(id);
+                dropFiles.delete(id);
+                if (f) dt.items.add(new File(f.parts, f.name, { type: f.mime }));
+            }
             window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                 level: 'info',
-                message: '__tauriInjectDrop: ' + fileName + ' (' + (mimeType || 'octet-stream') + ')'
+                message: '__waDropDispatch: ' + dt.files.length + ' archivo(s)'
             });
-            const binary = atob(base64Data);
-            const array = new Uint8Array(binary.length);
-            for (let i = 0; i < binary.length; i++) array[i] = binary.charCodeAt(i);
-            const blob = new Blob([array], { type: mimeType || 'application/octet-stream' });
-            const file = new File([blob], fileName, { type: mimeType || 'application/octet-stream' });
-            const dt = new DataTransfer();
-            dt.items.add(file);
-            dispatchPasteWithFiles(dt);
+            if (dt.files.length) dispatchPasteWithFiles(dt);
         } catch(e) {
             window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                 level: 'error',
-                message: '__tauriInjectDrop error: ' + (e.message || e)
+                message: '__waDropDispatch error: ' + (e.message || e)
             });
         }
     };

@@ -160,38 +160,9 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
                 return false;
             }
             log_message(&opener, LogLevel::Info, format!("on_navigation file:// (fallback): {}", file_path.display()));
-            let data = match std::fs::read(&file_path) {
-                Ok(d) => d,
-                Err(e) => {
-                    log_message(&opener, LogLevel::Error, format!("on_navigation file:// error leyendo: {e}"));
-                    return false;
-                }
-            };
-            let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-            let file_name = file_path
-                .file_name()
-                .and_then(|n| n.to_str())
-                .unwrap_or("archivo");
-            let mime = mime_guess::from_path(&file_path)
-                .first_or_octet_stream()
-                .to_string();
-            let js = format!(
-                "window.__tauriInjectDrop&&window.__tauriInjectDrop({},{},{})",
-                serde_json::to_string(file_name).unwrap_or_else(|e| {
-                    eprintln!("[paste] JSON serialization failed: {}", e);
-                    "\"\"".to_string()
-                }),
-                serde_json::to_string(&b64).unwrap_or_else(|e| {
-                    eprintln!("[paste] JSON serialization failed: {}", e);
-                    "\"\"".to_string()
-                }),
-                serde_json::to_string(&mime).unwrap_or_else(|e| {
-                    eprintln!("[paste] JSON serialization failed: {}", e);
-                    "\"\"".to_string()
-                }),
-            );
             if let Some(win) = opener.get_webview_window(&label_owned) {
-                let _ = win.eval(&js);
+                let app = opener.clone();
+                std::thread::spawn(move || inject_files_into_page(&app, &win, &[file_path]));
             }
             return false;
         }
@@ -297,44 +268,7 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
                 let win_h2 = win_h.clone();
 
                 std::thread::spawn(move || {
-                    for uri in &uri_strs {
-                        if !uri.starts_with("file://") { continue; }
-                        let path = decode_file_uri(uri);
-                        match std::fs::read(&path) {
-                            Ok(data) => {
-                                let name = path.file_name()
-                                    .and_then(|n| n.to_str())
-                                    .unwrap_or("archivo")
-                                    .to_string();
-                                let mime = mime_guess::from_path(&path)
-                                    .first_or_octet_stream()
-                                    .to_string();
-                                let b64 = base64::engine::general_purpose::STANDARD.encode(&data);
-                                log_message(&app_h2, LogLevel::Info,
-                                    format!("GTK drop inyectado: '{}' ({})", name, mime));
-                                let js = format!(
-                                    "window.__tauriInjectDrop&&window.__tauriInjectDrop({},{},{})",
-                                    serde_json::to_string(&name).unwrap_or_else(|e| {
-                                        eprintln!("[drag-drop] JSON serialization failed: {}", e);
-                                        "\"\"".to_string()
-                                    }),
-                                    serde_json::to_string(&b64).unwrap_or_else(|e| {
-                                        eprintln!("[drag-drop] JSON serialization failed: {}", e);
-                                        "\"\"".to_string()
-                                    }),
-                                    serde_json::to_string(&mime).unwrap_or_else(|e| {
-                                        eprintln!("[drag-drop] JSON serialization failed: {}", e);
-                                        "\"\"".to_string()
-                                    }),
-                                );
-                                let _ = win_h2.eval(&js);
-                            }
-                            Err(e) => {
-                                log_message(&app_h2, LogLevel::Error,
-                                    format!("GTK drop: error leyendo '{}': {}", path.display(), e));
-                            }
-                        }
-                    }
+                    inject_files_into_page(&app_h2, &win_h2, &dropped);
                 });
             });
         });
@@ -359,37 +293,8 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
             log_message(w.app_handle(), LogLevel::Info, format!(
                 "DragDrop Tauri event: {} path(s)", paths.len()
             ));
-            let mut files_json = String::from("[");
-            for (i, path) in paths.iter().enumerate() {
-                if let Ok(data) = std::fs::read(path) {
-                    if let Some(name) = path.file_name().and_then(|n| n.to_str()) {
-                        if i > 0 {
-                            files_json.push(',');
-                        }
-                        let b64 = base64::Engine::encode(
-                            &base64::engine::general_purpose::STANDARD,
-                            &data,
-                        );
-                        let escaped_name = name.replace('\\', "\\\\").replace('"', "\\\"");
-                        let mime = mime_guess::from_path(path).first_or_octet_stream().to_string();
-                        files_json.push_str(&format!(
-                            r#"{{"name":"{}","data":"{}","mime":"{}"}}"#,
-                            escaped_name, b64, mime
-                        ));
-                    }
-                } else {
-                    log_message(w.app_handle(), LogLevel::Error, format!(
-                        "No se pudo leer el archivo arrastrado: {}",
-                        path.display()
-                    ));
-                }
-            }
-            files_json.push(']');
-
-            let _ = w.eval(format!(
-                r#"(function(){{var files={};if(!files.length)return;var dt=new DataTransfer();for(var i=0;i<files.length;i++){{var f=files[i];var b=atob(f.data);var a=new Uint8Array(b.length);for(var j=0;j<b.length;j++)a[j]=b.charCodeAt(j);var blob=new Blob([a],{{type:f.mime||"application/octet-stream"}});dt.items.add(new File([blob],f.name,{{type:f.mime||"application/octet-stream"}}));}}if(typeof window.dispatchPasteWithFiles==='function'){{window.dispatchPasteWithFiles(dt);}}else{{console.error('[whataJOST] dispatchPasteWithFiles no disponible');}}}})()"#,
-                files_json
-            ));
+            let (app, win, paths) = (w.app_handle().clone(), w.clone(), paths.clone());
+            std::thread::spawn(move || inject_files_into_page(&app, &win, &paths));
         }
     });
 

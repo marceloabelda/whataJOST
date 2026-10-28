@@ -121,6 +121,53 @@ pub(crate) fn is_native_drop(path: &std::path::Path) -> bool {
     drops.iter().any(|(p, _)| *p == key)
 }
 
+static DROP_INJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
+
+/// Inyecta archivos arrastrados en la página como un único paste (ver
+/// `__waDrop*` en inject.js). Cada archivo se lee de a `DROP_CHUNK_BYTES` y
+/// viaja en varios `eval` chicos: un solo `eval` con el archivo entero en
+/// base64 obligaba a WebKit a parsear un script ~1,33× el tamaño del archivo
+/// (un video de 50 MB trababa la UI). Llamar desde un thread aparte.
+pub(crate) fn inject_files_into_page(app: &AppHandle, win: &tauri::WebviewWindow, paths: &[std::path::PathBuf]) {
+    let mut ids = Vec::new();
+    for path in paths {
+        let id = DROP_INJECT_COUNTER.fetch_add(1, Ordering::SeqCst);
+        match inject_file_chunks(win, id, path) {
+            Ok(()) => {
+                log_message(app, LogLevel::Info, format!("Drop inyectado: '{}'", path.display()));
+                ids.push(id);
+            }
+            Err(e) => {
+                log_message(app, LogLevel::Error, format!("Drop: error leyendo '{}': {}", path.display(), e));
+                let _ = win.eval(format!("window.__waDropAbort&&window.__waDropAbort({id})"));
+            }
+        }
+    }
+    if !ids.is_empty() {
+        let ids = ids.iter().map(|i| i.to_string()).collect::<Vec<_>>().join(",");
+        let _ = win.eval(format!("window.__waDropDispatch&&window.__waDropDispatch([{ids}])"));
+    }
+}
+
+fn inject_file_chunks(win: &tauri::WebviewWindow, id: u64, path: &std::path::Path) -> std::io::Result<()> {
+    use std::io::Read;
+    let mut file = std::fs::File::open(path)?;
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or("archivo");
+    let mime = mime_guess::from_path(path).first_or_octet_stream().to_string();
+    let json = |s: &str| serde_json::to_string(s).unwrap_or_else(|_| "\"\"".to_string());
+    let _ = win.eval(format!("window.__waDropBegin&&window.__waDropBegin({id},{},{})", json(name), json(&mime)));
+    let mut buf = vec![0u8; DROP_CHUNK_BYTES];
+    loop {
+        let n = file.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        // base64 solo usa [A-Za-z0-9+/=]: va directo entre comillas.
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
+        let _ = win.eval(format!("window.__waDropChunk&&window.__waDropChunk({id},\"{b64}\")"));
+    }
+}
+
 #[tauri::command]
 pub(crate) fn read_file_for_drop(app: AppHandle, path: String) -> Option<FileDropResult> {
     // En Windows, URL.pathname devuelve /C:/... — strip del / inicial.

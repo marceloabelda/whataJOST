@@ -54,6 +54,10 @@ pub const TRAY_BADGE_BLUE: u8 = 0;
 /// puede ser leída por los fallbacks que dispara la página
 pub const NATIVE_DROP_ALLOW_SECS: u64 = 30;
 
+/// Tamaño de cada trozo al inyectar un archivo arrastrado en la página
+/// (cada trozo viaja como un `eval` con ~4 MB de base64)
+pub const DROP_CHUNK_BYTES: usize = 3 * 1024 * 1024;
+
 // ============================================================================
 // URLs y hosts
 // ============================================================================
