@@ -48,6 +48,13 @@ pub const TRAY_BADGE_GREEN: u8 = 0;
 pub const TRAY_BADGE_BLUE: u8 = 0;
 
 // ============================================================================
+// Drag & drop
+// ============================================================================
+/// Ventana en segundos durante la cual una ruta arrastrada de forma nativa
+/// puede ser leída por los fallbacks que dispara la página
+pub const NATIVE_DROP_ALLOW_SECS: u64 = 30;
+
+// ============================================================================
 // URLs y hosts
 // ============================================================================
 /// URL base de WhatsApp Web

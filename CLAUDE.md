@@ -158,12 +158,17 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 
 ---
 
+- **Seguridad — la página es contenido remoto, no confiar en lo que manda:**
+  - **Nombres de archivo** (`sanitize_file_name` en `downloads.rs`, con tests): el `file_name` de `save_file` viene del atributo `download` (normalmente el nombre que puso quien mandó el archivo) y se usa con `dir.join(...)` en el fallback y en el modo PDF externo. Se reduce al nombre base y se reemplazan caracteres inválidos en Windows; sin esto, `../../.config/autostart/x.desktop` o una ruta absoluta escribían fuera de la carpeta de descargas (bastaba con cancelar el diálogo de guardar).
+  - **Lectura de archivos locales** (`NATIVE_DROPS` en `clipboard.rs`): `read_file_for_drop` (IPC) y la navegación a `file://` (Capa 4 de drag & drop) los puede disparar el JS de la página por su cuenta, así que solo leen rutas registradas por un arrastre nativo (señal GTK de la Capa 1 o `DragDropEvent` Enter/Drop de la Capa 3) en los últimos `NATIVE_DROP_ALLOW_SECS` (30 s). Sin esto, cualquier script en web.whatsapp.com podía leer `~/.ssh/id_rsa`.
+  - **Dominios** (`on_navigation`): se navega dentro de la app solo con `http(s)` y dominio exacto o subdominio de `whatsapp.com`, `whatsapp.net`, `facebook.com`, `fbcdn.net` (`host == d || host.ends_with(".d")`). Antes era `ends_with("whatsapp.com")`, que aceptaba `evilwhatsapp.com`.
+  - **Esquemas externos**: a `opener`/`xdg-open` solo van `http`, `https`, `mailto` y `tel`; el resto (`smb:`, `sftp:`, handlers de otras apps) se bloquea y se loggea.
 - **Links externos:** `window.open` override + `document.addEventListener('click', capture)` redirigen URLs no-WhatsApp a `window.location.href` → `on_navigation` las abre con `opener.open_url()` del plugin opener. Si `open_url()` falla, se lanza `xdg-open <url>` directamente como fallback. Ambos intentos quedan en los logs.
 
 - **Deep links `whatsapp://` (funciona ✓):**
   El sistema operativo puede abrir WhataJOST cuando el usuario hace clic en un link `whatsapp://send?phone=...` en el browser o en otra app.
 
-  **Registro del protocolo:** `public/whatajost-url-handler.desktop` declara `MimeType=x-scheme-handler/whatsapp;` con `NoDisplay=true` (no aparece en lanzadores). El deb/rpm lo instala en `/usr/share/applications/` vía `bundle.linux.deb.files` en `tauri.conf.json`. El post-install corre `update-desktop-database` que lo activa como handler del sistema.
+  **Registro del protocolo:** `public/whatajost-url-handler.desktop` declara `MimeType=x-scheme-handler/whatsapp;` con `NoDisplay=true` (no aparece en lanzadores). El deb lo instala en `/usr/share/applications/` vía `bundle.linux.deb.files` en `tauri.conf.json`. El post-install corre `update-desktop-database` que lo activa como handler del sistema.
 
   **`handle_deep_link(app, url)` (Rust):** Convierte `whatsapp://path?query` → `https://web.whatsapp.com/path?query` (strip de `whatsapp://`, prepend de la base) y llama `show_window`. La navegación (`navigate_whatsapp`, vía `WebviewWindow::navigate`) **no usa esperas fijas**: `DEEP_LINK_STATE` (`Mutex<(cargada, pendiente)>`) guarda si la ventana `whatsapp-web` ya terminó de cargar. Si ya cargó, navega en el acto; si no, deja la URL pendiente y la navega `on_whatsapp_loaded`, que se llama desde `on_page_load` (`PageLoadEvent::Finished`) de esa ventana. Las dos cosas van bajo el mismo lock para que no haya carrera entre "terminó de cargar" y "llegó el link". Antes había un `sleep` de 5 s al arrancar más 800 ms antes de navegar: en máquinas lentas el link se perdía y en rápidas sobraba.
 
@@ -242,17 +247,17 @@ Todas las escrituras usan `modify_config(app, |json| { ... })`: lee el JSON exis
 - **Desde el menú:** llamado con `silent=false` (muestra diálogos de error si falla).
 
 Flujo:
-1. `tauri_plugin_updater` verifica `latest.json` en GitHub releases. Como no fijamos `.target(...)` al registrar el plugin, la resolución de URL/firma prueba primero `linux-x86_64-{bundle_type}` (con `bundle_type()` detectado en runtime vía el patching binario que hace `tauri-bundler` con `patchelf` en cada paquete) y si no existe esa clave cae a `linux-x86_64` genérico. Hoy `latest.json` solo define una clave específica extra para AppImage (`linux-x86_64-appimage`) — deb y rpm comparten la genérica.
+1. `tauri_plugin_updater` verifica `latest.json` en GitHub releases. Como no fijamos `.target(...)` al registrar el plugin, la resolución de URL/firma prueba primero `linux-x86_64-{bundle_type}` (con `bundle_type()` detectado en runtime vía el patching binario que hace `tauri-bundler` con `patchelf` en cada paquete) y si no existe esa clave cae a `linux-x86_64` genérico. Hoy `latest.json` solo define una clave específica extra para AppImage (`linux-x86_64-appimage`) — el `.deb` usa la genérica.
 2. Si hay update: diálogo `OkCancel` con la versión nueva.
 3. Descarga el paquete (`update.download(...)`).
 4. **Linux, corriendo como AppImage** (detectado con `std::env::var_os("APPIMAGE")`, la variable que el propio runtime de AppImage setea): se usa `update.install(bytes)` — el instalador que ya trae `tauri-plugin-updater`, que hace un `rename` del AppImage actual a un backup temporal, escribe los bytes nuevos en el path original y restaura los permisos (evita "text file busy" porque nunca escribe sobre el inode que está corriendo). No necesita root. Si tiene éxito, `h.restart()` (que también es AppImage-aware: relanza el path de `$APPIMAGE`, no el binario montado en el `/tmp` de FUSE).
-5. **Linux, instalado como .deb/.rpm** (cualquier otro caso): se guarda el paquete a un temp file (`.deb`) y 4 intentos de instalación en cascada:
+5. **Linux, instalado como .deb** (cualquier otro caso): se guarda el paquete a un temp file (`.deb`) y 4 intentos de instalación en cascada:
    - `pkexec apt install --yes <file>` (Ubuntu moderno, maneja dependencias)
    - `pkexec dpkg -i <file>` (fallback sin resolver deps)
    - `zenity --password` + `sudo -S dpkg -i <file>` (fallback sin pkexec)
    - `xdg-open <file>` (abre el instalador gráfico del sistema; muestra aviso al usuario para que complete manualmente)
 6. **Windows:** `msiexec /i <file> /quiet`.
-7. Si la instalación fue exitosa (deb/rpm o Windows): `h.restart()`.
+7. Si la instalación fue exitosa (deb o Windows): `h.restart()`.
 
 > **⚠ No tocar:** el orden de los 4 intentos Linux del paso 5 (el último abre un diálogo y retorna, no espera a que el usuario instale — si se invierte el orden, los intentos con pkexec no corren). El chequeo de `APPIMAGE` tiene que ir *antes* de escribir el temp file `.deb` — si un usuario de AppImage cayera en la cascada pkexec/dpkg, fallaría siempre (no es un paquete Debian).
 
@@ -329,7 +334,7 @@ El script:
 3. Commitea los cambios de versión y lock files (`Release v<version>`)
 4. Crea y pushea el tag `v<version>` a GitHub y git.jost.ar
 
-El build y la publicación del release (`.deb`, `.rpm`, `.AppImage`, `.msi`, `.sig`, `latest.json`) los hace GitHub Actions al detectar el tag — no corren localmente. `release.yml` primero llama a `check.yml` (job `check`) y solo si pasa arranca el build; `check.yml` también corre solo en cada push a `main` y en PRs. Clippy corre en Linux: el código `cfg(not(target_os = "linux"))` (toast HTML, etc.) solo se compila en el build de Windows, sin `-D warnings`. Seguir el progreso en `https://github.com/marceloabelda/whataJOST/actions`.
+El build y la publicación del release (`.deb`, `.AppImage`, `.msi`, `.sig`, `latest.json`). **No se genera `.rpm`** desde v1.2.15: el auto-update de una instalación .rpm nunca funcionó (bajaba el `.deb` de la clave genérica), así que en Fedora/Arch/etc. se usa el AppImage los hace GitHub Actions al detectar el tag — no corren localmente. `release.yml` primero llama a `check.yml` (job `check`) y solo si pasa arranca el build; `check.yml` también corre solo en cada push a `main` y en PRs. Clippy corre en Linux: el código `cfg(not(target_os = "linux"))` (toast HTML, etc.) solo se compila en el build de Windows, sin `-D warnings`. Seguir el progreso en `https://github.com/marceloabelda/whataJOST/actions`.
 
 Requisitos:
 - Estar en la rama `main` sin cambios pendientes

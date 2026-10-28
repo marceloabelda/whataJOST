@@ -95,11 +95,41 @@ pub(crate) fn list_clipboard_types(tool: &str) -> String {
         .unwrap_or_else(|| "(no disponible)".to_string())
 }
 
+/// Rutas que llegaron por un arrastre nativo (señal GTK o `DragDropEvent` de
+/// Tauri) y cuándo. Los caminos que el JS de la página puede disparar por su
+/// cuenta (`read_file_for_drop` y la navegación a `file://`) solo pueden leer
+/// rutas de esta lista: si no, cualquier script en web.whatsapp.com podría leer
+/// archivos arbitrarios del disco (ej. `~/.ssh/id_rsa`).
+static NATIVE_DROPS: Mutex<Vec<(std::path::PathBuf, std::time::Instant)>> = Mutex::new(Vec::new());
+
+fn drop_key(path: &std::path::Path) -> std::path::PathBuf {
+    std::fs::canonicalize(path).unwrap_or_else(|_| path.to_path_buf())
+}
+
+pub(crate) fn register_native_drop<'a>(paths: impl IntoIterator<Item = &'a std::path::Path>) {
+    let Ok(mut drops) = NATIVE_DROPS.lock() else { return };
+    drops.retain(|(_, t)| t.elapsed() < Duration::from_secs(NATIVE_DROP_ALLOW_SECS));
+    for p in paths {
+        drops.push((drop_key(p), std::time::Instant::now()));
+    }
+}
+
+pub(crate) fn is_native_drop(path: &std::path::Path) -> bool {
+    let Ok(mut drops) = NATIVE_DROPS.lock() else { return false };
+    drops.retain(|(_, t)| t.elapsed() < Duration::from_secs(NATIVE_DROP_ALLOW_SECS));
+    let key = drop_key(path);
+    drops.iter().any(|(p, _)| *p == key)
+}
+
 #[tauri::command]
 pub(crate) fn read_file_for_drop(app: AppHandle, path: String) -> Option<FileDropResult> {
     // En Windows, URL.pathname devuelve /C:/... — strip del / inicial.
     #[cfg(target_os = "windows")]
     let path = if path.starts_with('/') { path[1..].to_string() } else { path };
+    if !is_native_drop(std::path::Path::new(&path)) {
+        log_message(&app, LogLevel::Warn, format!("Drop: lectura rechazada, '{}' no vino de un arrastre nativo", path));
+        return None;
+    }
     match std::fs::read(&path) {
         Ok(data) => {
             let name = std::path::Path::new(&path)

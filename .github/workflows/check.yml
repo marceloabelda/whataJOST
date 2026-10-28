@@ -1,6 +1,6 @@
 name: Check
 
-# Chequeos rápidos: sintaxis del JS inyectado + clippy sin warnings.
+# Chequeos rápidos: sintaxis del JS inyectado + clippy sin warnings + tests.
 # Corre en cada push a main / PR, y release.yml lo llama antes de buildear
 # para que un tag con errores no llegue a generar un release.
 on:
@@ -42,3 +42,6 @@ jobs:
 
       - name: Clippy
         run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
+      - name: Tests
+        run: cargo test --manifest-path src-tauri/Cargo.toml --lib

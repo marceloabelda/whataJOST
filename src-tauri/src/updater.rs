@@ -89,7 +89,7 @@ pub(crate) fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                             // AppImage no requiere privilegios de root: reemplazar el propio
                             // archivo en su lugar (vía el installer del plugin, que hace un
                             // rename→write→restore-permissions seguro) y relanzar alcanza. La
-                            // cascada pkexec/dpkg de abajo es solo para instalaciones .deb/.rpm.
+                            // cascada pkexec/dpkg de abajo es solo para instalaciones .deb.
                             #[cfg(target_os = "linux")]
                             if std::env::var_os("APPIMAGE").is_some() {
                                 match update.install(bytes) {

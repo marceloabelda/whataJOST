@@ -56,7 +56,8 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
 ### Notificaciones
 
-- Notificaciones in-app al recibir mensajes (toast estilo Telegram con nombre y preview)
+- Notificaciones nativas del escritorio al recibir mensajes (Linux), con nombre y preview; click para abrir WhatsApp
+- En Windows, toast propio estilo Telegram
 - Toggle para activar/desactivar notificaciones emergentes desde el menú del tray
 
 ### Archivos y portapapeles
@@ -90,10 +91,13 @@ sudo dpkg -i whatajost_*.deb
 
 O abrí el archivo `.deb` con el instalador de paquetes de tu escritorio.
 
-### Linux (Fedora/RHEL)
+### Linux (otras distros: Fedora, Arch, etc.)
+
+Usá el `.AppImage`: no requiere instalación ni permisos de root, y se actualiza solo.
 
 ```bash
-sudo rpm -i whatajost-*.rpm
+chmod +x whataJOST_*.AppImage
+./whataJOST_*.AppImage
 ```
 
 ### Windows

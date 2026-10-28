@@ -155,6 +155,10 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
                     return false;
                 }
             };
+            if !is_native_drop(&file_path) {
+                log_message(&opener, LogLevel::Warn, format!("on_navigation file:// rechazado, no vino de un arrastre nativo: {}", file_path.display()));
+                return false;
+            }
             log_message(&opener, LogLevel::Info, format!("on_navigation file:// (fallback): {}", file_path.display()));
             let data = match std::fs::read(&file_path) {
                 Ok(d) => d,
@@ -192,12 +196,19 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
             return false;
         }
         let host = url.host_str().unwrap_or("");
-        let is_whatsapp = host.ends_with("whatsapp.com")
-            || host.ends_with("whatsapp.net")
-            || host.ends_with("facebook.com")
-            || host.ends_with("fbcdn.net");
+        // Dominio exacto o subdominio: `ends_with("whatsapp.com")` solo
+        // aceptaría también `evilwhatsapp.com` y lo abriría dentro de la app.
+        let is_whatsapp = matches!(scheme, "https" | "http")
+            && ["whatsapp.com", "whatsapp.net", "facebook.com", "fbcdn.net"]
+                .iter()
+                .any(|d| host == *d || host.ends_with(&format!(".{d}")));
         if is_whatsapp {
             true
+        } else if !matches!(scheme, "https" | "http" | "mailto" | "tel") {
+            // Esquemas raros (smb:, sftp:, handlers de otras apps) no se pasan
+            // a xdg-open: un link podría disparar cualquier app registrada.
+            log_message(&opener, LogLevel::Warn, format!("Link bloqueado (esquema '{}' no permitido): {}", scheme, url));
+            false
         } else {
             let url_str = url.as_str().to_string();
             log_message(&opener, LogLevel::Info, format!("Link externo: {}", url_str));
@@ -274,6 +285,11 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
                 if uris.is_empty() { return; }
 
                 let uri_strs: Vec<String> = uris.into_iter().map(|u| u.to_string()).collect();
+                let dropped: Vec<std::path::PathBuf> = uri_strs.iter()
+                    .filter(|u| u.starts_with("file://"))
+                    .map(|u| decode_file_uri(u))
+                    .collect();
+                register_native_drop(dropped.iter().map(|p| p.as_path()));
                 log_message(&app_h, LogLevel::Info,
                     format!("GTK drag-data-received: {} URI(s): {}", uri_strs.len(), uri_strs.join(", ")));
 
@@ -335,7 +351,11 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
     // Manejar drag & drop de archivos desde el sistema operativo
     let w = window.clone();
     window.on_webview_event(move |event| {
+        if let WebviewEvent::DragDrop(DragDropEvent::Enter { paths, .. }) = event {
+            register_native_drop(paths.iter().map(|p| p.as_path()));
+        }
         if let WebviewEvent::DragDrop(DragDropEvent::Drop { paths, .. }) = event {
+            register_native_drop(paths.iter().map(|p| p.as_path()));
             log_message(w.app_handle(), LogLevel::Info, format!(
                 "DragDrop Tauri event: {} path(s)", paths.len()
             ));

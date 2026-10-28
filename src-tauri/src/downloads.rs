@@ -115,10 +115,33 @@ pub(crate) fn save_file_abort(app: AppHandle, id: u64) {
 #[tauri::command]
 pub(crate) fn save_file(app: AppHandle, id: u64, file_name: String) -> Result<String, String> {
     let tmp = save_upload_path(&app, id)?;
-    let result = save_file_impl(&app, &tmp, &file_name);
+    let safe_name = sanitize_file_name(&file_name);
+    if safe_name != file_name {
+        log_message(&app, LogLevel::Warn, format!("Nombre de archivo saneado: {:?} → {:?}", file_name, safe_name));
+    }
+    let result = save_file_impl(&app, &tmp, &safe_name);
     // Si se movió ya no existe; si hubo error o cancelación, no dejar basura.
     let _ = std::fs::remove_file(&tmp);
     result
+}
+
+/// El nombre viene de la página (atributo `download`, normalmente el nombre que
+/// puso quien mandó el archivo). Se usa con `dir.join(...)` en el fallback y en
+/// el modo PDF externo: un nombre con `../` o absoluto escribiría fuera de la
+/// carpeta de descargas (ej. `~/.config/autostart/`). Nos quedamos solo con el
+/// nombre base y reemplazamos caracteres inválidos en Windows.
+pub(crate) fn sanitize_file_name(name: &str) -> String {
+    let base = name.rsplit(['/', '\\']).next().unwrap_or("");
+    let cleaned: String = base
+        .chars()
+        .map(|c| if c.is_control() || matches!(c, '<' | '>' | ':' | '"' | '|' | '?' | '*') { '_' } else { c })
+        .collect();
+    let cleaned = cleaned.trim().trim_end_matches('.').trim();
+    if cleaned.is_empty() || cleaned == "." || cleaned == ".." {
+        "archivo".to_string()
+    } else {
+        cleaned.to_string()
+    }
 }
 
 pub(crate) fn save_file_impl(app: &AppHandle, tmp: &std::path::Path, file_name: &str) -> Result<String, String> {
@@ -185,5 +208,40 @@ pub(crate) fn save_file_impl(app: &AppHandle, tmp: &std::path::Path, file_name: 
             log_message(app, LogLevel::Info, format!("Archivo guardado en fallback (sin diálogo): {}", path_str));
             Ok(path_str)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::sanitize_file_name;
+
+    #[test]
+    fn nombres_normales_no_cambian() {
+        assert_eq!(sanitize_file_name("foto.jpg"), "foto.jpg");
+        assert_eq!(sanitize_file_name("Informe final (v2).pdf"), "Informe final (v2).pdf");
+        assert_eq!(sanitize_file_name(".bashrc"), ".bashrc");
+    }
+
+    #[test]
+    fn path_traversal_queda_en_el_nombre_base() {
+        assert_eq!(sanitize_file_name("../../.config/autostart/x.desktop"), "x.desktop");
+        assert_eq!(sanitize_file_name("/home/user/.bashrc"), ".bashrc");
+        assert_eq!(sanitize_file_name("..\\..\\Windows\\evil.exe"), "evil.exe");
+        assert_eq!(sanitize_file_name("C:\\Users\\x\\a.txt"), "a.txt");
+    }
+
+    #[test]
+    fn nombres_vacios_o_especiales() {
+        assert_eq!(sanitize_file_name(""), "archivo");
+        assert_eq!(sanitize_file_name(".."), "archivo");
+        assert_eq!(sanitize_file_name("../"), "archivo");
+        assert_eq!(sanitize_file_name("   "), "archivo");
+    }
+
+    #[test]
+    fn caracteres_invalidos_en_windows() {
+        assert_eq!(sanitize_file_name("a:b.txt"), "a_b.txt");
+        assert_eq!(sanitize_file_name("que?.pdf"), "que_.pdf");
+        assert_eq!(sanitize_file_name("x\u{0}y.txt"), "x_y.txt");
     }
 }

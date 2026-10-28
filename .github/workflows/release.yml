@@ -118,7 +118,6 @@ jobs:
           path: |
             src-tauri/target/release/bundle/deb/*.deb
             src-tauri/target/release/bundle/deb/*.deb.sig
-            src-tauri/target/release/bundle/rpm/*.rpm
             src-tauri/target/release/bundle/appimage/*.AppImage
             src-tauri/target/release/bundle/appimage/*.AppImage.sig
             src-tauri/target/release/bundle/msi/*.msi
@@ -157,8 +156,8 @@ jobs:
           for deb in glob.glob('artifacts/**/*.deb', recursive=True):
               sig_path = deb + '.sig'
               if os.path.exists(sig_path):
-                  # Clave genérica: fallback para cualquier instalación Linux que no
-                  # matchee una clave más específica (ej. rpm, sin AppImage detectado).
+                  # Clave genérica: la usan las instalaciones .deb (y cualquier Linux
+                  # que no matchee una clave más específica, como la de AppImage).
                   platforms['linux-x86_64'] = {
                       'signature': open(sig_path).read().strip(),
                       'url': f"{repo_url}/releases/download/v{version}/{os.path.basename(deb)}"
@@ -200,7 +199,6 @@ jobs:
           files: |
             artifacts/**/*.deb
             artifacts/**/*.deb.sig
-            artifacts/**/*.rpm
             artifacts/**/*.AppImage
             artifacts/**/*.AppImage.sig
             artifacts/**/*.msi
