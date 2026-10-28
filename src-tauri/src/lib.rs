@@ -12,6 +12,7 @@ use constants::*;
 mod logging;
 mod window;
 mod i18n;
+mod resources;
 mod updater;
 mod clipboard;
 mod config;
@@ -73,7 +74,8 @@ pub fn run() {
             logging::get_logs,
             logging::clear_logs,
             logging::open_logs,
-            logging::log_js
+            logging::log_js,
+            resources::get_resource_usage
         ])
         .setup(|app| {
             let notifications_enabled = load_notification_enabled(app.handle());

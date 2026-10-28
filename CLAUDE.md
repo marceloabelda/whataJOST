@@ -24,6 +24,7 @@ Para cada tarea, seguí estos pasos en orden:
   - `updater.rs` — `check_for_updates_impl` (cascada de instalación .deb, AppImage, Windows)
   - `logging.rs` — `log_message`, buffer de logs, comandos de logs y ventana `logs`
   - `i18n.rs` — textos ES/EN (`t()`)
+  - `resources.rs` — comando `get_resource_usage` (CPU y memoria de la app y sus procesos WebKit, solo Linux) para la pestaña "Recursos" de la ventana de logs
 - Al agregar un comando IPC: `#[tauri::command] pub(crate) fn` en su módulo, registrarlo en `generate_handler!` con path completo (`modulo::comando`) y sumarlo a `permissions/default.toml`
 - `src-tauri/src/inject.js` — Script inyectado en las ventanas de WhatsApp Web (embebido con `include_str!`)
 - `src-tauri/src/constants.rs` — Constantes de configuración (delays, intervalos, geometría del badge)
@@ -281,6 +282,7 @@ Flujo:
 | `get_logs` | Devuelve todos los logs del buffer (usada por `logs.html`) |
 | `clear_logs` | Vacía el buffer de logs |
 | `open_logs` | Abre la ventana del visor de logs centrada en pantalla |
+| `get_resource_usage` | CPU % y memoria (PSS) de la app y sus procesos hijos, leído de `/proc` (solo Linux; si no, `available: false`) |
 
 ### Capabilities (IPC por ventana)
 
@@ -296,7 +298,9 @@ La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la 
 
 ### Ventanas HTML (`public/`)
 
-- `logs.html` — Visor de logs en tiempo real (polling 2 s a `get_logs`); muestra error explícito si IPC no está disponible
+- `logs.html` — Dos pestañas:
+  - **Logs**: visor en tiempo real (polling 2 s a `get_logs`); muestra error explícito si IPC no está disponible.
+  - **Recursos** (solo Linux): gráficos de CPU y memoria de los últimos 5 min (150 puntos, dibujados a mano en `<canvas>`, sin librerías) y tabla de procesos. Llama `get_resource_usage` cada 2 s **solo mientras la ventana está abierta** (con cualquier pestaña visible, para que el historial ya esté armado): con la ventana cerrada no se mide nada. `get_resource_usage` recorre `/proc` para armar el árbol de procesos desde el propio pid (whatajost + WebKit web/red/GPU + sandbox), suma `utime+stime` (USER_HZ = 100, fijo en la ABI) y calcula el % por diferencia contra la lectura anterior (estilo `top`: 100 % = 1 núcleo); memoria = PSS de `smaps_rollup`. Fuera de Linux devuelve `available: false` y la pestaña muestra "Disponible solo en Linux".
 - `notification.html` — Toast de notificación transparente (se auto-cierra a los 5,5 s). Solo fuera de Linux.
 
 `tauri.conf.json` usa `frontendDist: "../public"` directo, sin bundler, y `app.windows: []`. Antes había una ventana `main` oculta de 1×1 px con un `index.html` vacío (resto de la plantilla) que costaba un proceso WebKit entero (~35 MB) sin uso, y Vite solo existía para compilar esa página: se eliminaron ambos. La app no se cierra por no tener esa ventana: `whatsapp-web` nunca se destruye (se oculta).

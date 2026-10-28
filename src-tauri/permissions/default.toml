@@ -16,4 +16,5 @@ commands.allow = [
   "get_logs",
   "clear_logs",
   "open_logs",
+  "get_resource_usage",
 ]

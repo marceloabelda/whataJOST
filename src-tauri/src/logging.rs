@@ -107,7 +107,7 @@ pub(crate) fn open_logs(app: AppHandle) {
         WebviewUrl::App("logs.html".into()),
     )
     .title("Logs - WhataJOST")
-    .inner_size(650.0, 420.0)
+    .inner_size(720.0, 540.0)
     .position(x, y)
     .resizable(true)
     .build();
