@@ -13,15 +13,18 @@ Para cada tarea, seguí estos pasos en orden:
 
 ## Architecture
 
-- `src-tauri/src/lib.rs` — Lógica principal: ventana WhatsApp, script inyectado, comandos Tauri, bandeja
+- `src-tauri/src/lib.rs` — Lógica principal: ventana WhatsApp, comandos Tauri, bandeja, notificaciones, updater
+- `src-tauri/src/inject.js` — Script inyectado en las ventanas de WhatsApp Web (embebido con `include_str!`)
+- `src-tauri/src/constants.rs` — Constantes de configuración (delays, intervalos, geometría del badge)
+- `.github/workflows/check.yml` — Chequeos (sintaxis de `inject.js` + clippy); `release.yml` — build y publicación
 - `src-tauri/Cargo.toml` — Dependencias Rust
 - `src-tauri/capabilities/` — Permisos Tauri por ventana
 - `src-tauri/tauri.conf.json` — Configuración de Tauri
 - `latest.json` — Metadata del auto-updater
 
-### Script inyectado (`initialization_script` en `create_whatsapp_window`)
+### Script inyectado (`src-tauri/src/inject.js`)
 
-El script se inyecta con `WebviewWindowBuilder::initialization_script` en `create_whatsapp_window_impl`. Corre antes de que cargue cualquier JS de WhatsApp Web, dentro de un IIFE para no contaminar el scope global. Establece interceptores permanentes sobre los que WhatsApp Web opera sin saberlo.
+El script vive en `src-tauri/src/inject.js` y se embebe en el binario con `include_str!`; se inyecta con `WebviewWindowBuilder::initialization_script` en `create_whatsapp_window_impl`. Validar la sintaxis con `node --check src-tauri/src/inject.js` (lo hacen CI y `release.sh`): un error de sintaxis compila igual y recién falla dentro de WhatsApp Web. Corre antes de que cargue cualquier JS de WhatsApp Web, dentro de un IIFE para no contaminar el scope global. Establece interceptores permanentes sobre los que WhatsApp Web opera sin saberlo.
 
 > Este documento no usa números de línea (se desactualizan con cada cambio): para ubicar algo, buscar por nombre de función o variable con `grep -n`.
 
@@ -308,12 +311,14 @@ Para publicar una nueva versión:
 ```
 
 El script:
+0. Corre los chequeos (`node --check` de `inject.js` + `cargo clippy -- -D warnings`); si fallan, aborta antes de tocar nada
 1. Actualiza la versión en `package.json`, `src-tauri/Cargo.toml` y `src-tauri/tauri.conf.json`
 2. Ejecuta `cargo update` y `pnpm update`
 3. Commitea los cambios de versión y lock files (`Release v<version>`)
 4. Crea y pushea el tag `v<version>` a GitHub y git.jost.ar
 
-El build y la publicación del release (`.deb`, `.rpm`, `.AppImage`, `.msi`, `.sig`, `latest.json`) los hace GitHub Actions al detectar el tag — no corren localmente. Seguir el progreso en `https://github.com/marceloabelda/whataJOST/actions`.
+El build y la publicación del release (`.deb`, `.rpm`, `.AppImage`, `.msi`, `.sig`, `latest.json`) los hace GitHub Actions al detectar el tag — no corren localmente. `release.yml` primero llama a `check.yml` (job `check`) y solo si pasa arranca el build; `check.yml` también corre solo en cada push a `main` y en PRs. Clippy corre en Linux: el código `cfg(not(target_os = "linux"))` (toast HTML, etc.) solo se compila en el build de Windows, sin `-D warnings`. Seguir el progreso en `https://github.com/marceloabelda/whataJOST/actions`.
 
 Requisitos:
 - Estar en la rama `main` sin cambios pendientes
+- `cargo` en el PATH (`. "$HOME/.cargo/env"` si la shell no lo carga) y `node`

@@ -1,4 +1,4 @@
-/// Constantes de configuración y comportamiento de la aplicación
+//! Constantes de configuración y comportamiento de la aplicación
 
 // ============================================================================
 // Logging

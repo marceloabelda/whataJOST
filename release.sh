@@ -23,6 +23,10 @@ if ! git diff-index --quiet HEAD --; then
     exit 1
 fi
 
+echo "🔍 Chequeando JS inyectado y clippy..."
+node --check src-tauri/src/inject.js
+cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
+
 echo "🔖 Preparando release v${VERSION}..."
 
 # Actualizar versión en los tres archivos

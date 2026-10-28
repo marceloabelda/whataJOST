@@ -1,0 +1,44 @@
+name: Check
+
+# Chequeos rápidos: sintaxis del JS inyectado + clippy sin warnings.
+# Corre en cada push a main / PR, y release.yml lo llama antes de buildear
+# para que un tag con errores no llegue a generar un release.
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_call:
+
+jobs:
+  check:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # El JS inyectado vive en un string embebido con include_str!: un error
+      # de sintaxis compila igual y recién falla dentro de WhatsApp Web.
+      - name: Sintaxis del script inyectado
+        run: node --check src-tauri/src/inject.js
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+
+      - uses: swatinem/rust-cache@v2
+        with:
+          workspaces: src-tauri -> target
+
+      - name: Instalar dependencias del sistema
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            libwebkit2gtk-4.1-dev \
+            libappindicator3-dev \
+            librsvg2-dev
+
+      - name: Clippy
+        run: cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
