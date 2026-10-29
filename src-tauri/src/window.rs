@@ -305,7 +305,7 @@ pub(crate) fn chrome_user_agent() -> String {
 
 /// Abre una URL en la app del sistema (navegador, cliente de mail...). El
 /// esquema ya tiene que venir validado (http, https, mailto, tel).
-fn open_url_external(app: &AppHandle, url: &str) {
+pub(crate) fn open_url_external(app: &AppHandle, url: &str) {
     log_message(app, LogLevel::Info, format!("Link externo: {}", url));
     if let Err(e) = app.opener().open_url(url, None::<&str>) {
         log_message(app, LogLevel::Warn, format!("opener.open_url falló ({}), usando xdg-open...", e));

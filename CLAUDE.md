@@ -217,6 +217,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 | Descargar PDF abre con visor externo | CheckMenuItem | toggle `PdfExternalReaderState`, persiste en `config.json` (ver sección "PDFs") |
 | Buscar actualización | MenuItem | `check_for_updates(app)` |
 | Ver logs | MenuItem | abre/enfoca ventana `logs` |
+| Acerca de | MenuItem | `show_about` (tray.rs): diálogo con la versión y botón "Abrir GitHub" (`GITHUB_URL` en constants.rs, se abre con `open_url_external`) |
 | Salir | MenuItem | `app.exit(0)` |
 
 El menú se reconstruye completamente en cada `update_tray_menu()` → `build_tray_menu()`.

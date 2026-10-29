@@ -24,6 +24,7 @@ pub const UPDATE_CHECK_INTERVAL_SECS: u64 = 2 * 60 * 60; // 2 horas
 // Notificaciones emergentes
 // ============================================================================
 /// Tiempo en ms que la ventana de notificación permanece visible
+pub const GITHUB_URL: &str = "https://github.com/marceloabelda/whataJOST";
 pub const NOTIFICATION_DISPLAY_TIME_MS: u64 = 5500;
 
 // ============================================================================

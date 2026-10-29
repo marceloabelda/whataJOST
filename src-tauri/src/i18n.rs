@@ -26,6 +26,8 @@ pub(crate) fn t(key: &'static str) -> &'static str {
         ("tray_update", false) => "Check for updates",
         ("tray_logs", true) => "Ver logs",
         ("tray_logs", false) => "View logs",
+        ("tray_about", true) => "Acerca de",
+        ("tray_about", false) => "About",
         ("tray_quit", true) => "Salir",
         ("tray_quit", false) => "Quit",
         ("dlg_title_update", true) => "whataJOST - Actualización",

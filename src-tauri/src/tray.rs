@@ -170,12 +170,36 @@ pub(crate) fn build_tray_menu(app: &AppHandle) -> tauri::Result<Menu<tauri::Wry>
     let pdf_reader_item = CheckMenuItem::with_id(app, "toggle_pdf_reader", t("tray_pdf_reader"), true, pdf_external_reader, None::<&str>)?;
     let update_item    = MenuItem::with_id(app, "update",         t("tray_update"),    true, None::<&str>)?;
     let logs_item      = MenuItem::with_id(app, "logs",           t("tray_logs"),                true, None::<&str>)?;
+    let about_item     = MenuItem::with_id(app, "about",          t("tray_about"),               true, None::<&str>)?;
     let quit_item      = MenuItem::with_id(app, "quit",           t("tray_quit"),                   true, None::<&str>)?;
 
     let items: Vec<&dyn IsMenuItem<tauri::Wry>> = vec![
-        &show_item, &show2_item, &autostart_item, &notify_item, &account2_item, &pdf_reader_item, &update_item, &logs_item, &quit_item,
+        &show_item, &show2_item, &autostart_item, &notify_item, &account2_item, &pdf_reader_item, &update_item, &logs_item, &about_item, &quit_item,
     ];
     Menu::with_items(app, &items)
+}
+
+pub(crate) fn show_about(app: &AppHandle) {
+    let version = app.package_info().version.to_string();
+    let es = ui_lang_es();
+    let handle = app.clone();
+    app.dialog()
+        .message(if es {
+            format!("WhataJOST v{version}\n\nWrapper nativo de WhatsApp Web.\n{GITHUB_URL}")
+        } else {
+            format!("WhataJOST v{version}\n\nNative WhatsApp Web wrapper.\n{GITHUB_URL}")
+        })
+        .title(t("tray_about"))
+        .kind(MessageDialogKind::Info)
+        .buttons(MessageDialogButtons::OkCancelCustom(
+            if es { "Abrir GitHub" } else { "Open GitHub" }.to_string(),
+            if es { "Cerrar" } else { "Close" }.to_string(),
+        ))
+        .show(move |open| {
+            if open {
+                open_url_external(&handle, GITHUB_URL);
+            }
+        });
 }
 
 pub(crate) fn update_tray_menu(app: &AppHandle) {

@@ -194,6 +194,7 @@ pub fn run() {
                         }
                     }
                     "logs" => open_logs(app.clone()),
+                    "about" => show_about(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray: &TrayIcon, event: TrayIconEvent| {
