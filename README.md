@@ -8,29 +8,6 @@ Wrapper nativo de WhatsApp Web construido con [Tauri v2](https://v2.tauri.app/).
 
 Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
-```
-                        ┌──────────────────────────────────┐
-                        │           WhataJOST              │
-                        └──────────────┬───────────────────┘
-                                       │
-                                       ▼
-                            ┌─────────────────┐
-                            │  WhatsApp Web   │
-                            │                 │
-                            │  mensajes       │
-                            │  archivos       │
-                            │  paste/drop     │
-                            │  notificaciones │
-                            │  deep links     │
-                            └────────┬────────┘
-                                     │
-                          ┌──────────▼─────────┐
-                          │     System Tray     │
-                          │                     │
-                          │   [ico]  [N msgs]   │
-                          └─────────────────────┘
-```
-
 ---
 
 ## Características
@@ -42,7 +19,7 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 - Soporte para dos cuentas de WhatsApp en simultáneo, cada una con su propia sesión (activable desde el menú del tray)
 - Cierre de ventana oculta la app (no la termina), preservando la sesión
 - Versión visible en la barra de título
-- Atajo de teclado global **Ctrl+Shift+W** para mostrar/ocultar la ventana
+- Atajo de teclado global **Win+Alt+W** para mostrar/ocultar la ventana
 - Corrección ortográfica nativa en campos de texto (menú contextual de WebKitGTK)
 
 ### Bandeja del sistema (tray)
@@ -52,7 +29,8 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 - Badge numérico con mensajes sin leer sobre el ícono
 - Toggle de notificaciones emergentes (persistido en disco)
 - Inicio automático con el sistema (autostart)
-- Visor de logs en tiempo real, accesible desde el menú del tray
+- Visor de logs en tiempo real, con pestaña de uso de CPU y memoria (Linux), accesible desde el menú del tray
+- Interfaz en español e inglés
 
 ### Notificaciones
 
@@ -64,7 +42,8 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
 - Pegar imágenes desde el portapapeles del sistema (Wayland y X11)
 - Drag & drop de archivos desde el explorador de archivos
-- Descarga de archivos (PDF, imágenes, etc.) con diálogo nativo de guardado
+- Descarga de archivos (PDF, imágenes, etc.) con diálogo nativo de guardado; los archivos grandes se transfieren en partes
+- Opción en el tray para que las descargas de PDF se abran directo con el visor externo
 
 ### Links y deep links
 
@@ -73,7 +52,7 @@ Fork de [jude7733/whatauri](https://github.com/jude7733/whatauri).
 
 ### Actualizaciones
 
-- Actualización automática al iniciar (en segundo plano, sin interrumpir)
+- Chequeo automático en segundo plano al iniciar y cada 2 horas, sin interrumpir
 - Verificación manual desde el menú del tray
 - Reinicio automático post-actualización
 
