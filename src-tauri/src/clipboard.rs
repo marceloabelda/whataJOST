@@ -13,24 +13,32 @@ pub(crate) struct FileDropResult {
     pub(crate) mime: String,
 }
 
+/// Herramienta para leer el portapapeles del sistema, detectada una vez por
+/// sesión según qué binario está instalado (no según si hay una imagen: si el
+/// primer pegado no traía imagen, antes quedaba "sin herramienta" y se loggeaba
+/// que faltaba instalar wl-clipboard). En Wayland se prefiere `wl-paste`; en
+/// X11, `xclip` (`wl-paste` no funciona sin un servidor Wayland).
 #[cfg(target_os = "linux")]
-pub(crate) fn base64_encode_bytes(data: &[u8]) -> String {
-    const T: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    let mut out = String::with_capacity(data.len().div_ceil(3) * 4);
-    for chunk in data.chunks(3) {
-        let n = (chunk[0] as u32) << 16
-            | (*chunk.get(1).unwrap_or(&0) as u32) << 8
-            | (*chunk.get(2).unwrap_or(&0) as u32);
-        out.push(T[(n >> 18 & 63) as usize] as char);
-        out.push(T[(n >> 12 & 63) as usize] as char);
-        out.push(if chunk.len() > 1 { T[(n >> 6 & 63) as usize] as char } else { '=' });
-        out.push(if chunk.len() > 2 { T[(n & 63) as usize] as char } else { '=' });
-    }
-    out
+fn clipboard_tool() -> Option<&'static str> {
+    static TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
+    *TOOL.get_or_init(|| {
+        let order: [(&'static str, &str); 2] = if std::env::var_os("WAYLAND_DISPLAY").is_some() {
+            [("wl-paste", "--version"), ("xclip", "-version")]
+        } else {
+            [("xclip", "-version"), ("wl-paste", "--version")]
+        };
+        order.into_iter().find_map(|(tool, flag)| {
+            std::process::Command::new(tool)
+                .arg(flag)
+                .stdin(std::process::Stdio::null())
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .ok()
+                .map(|_| tool)
+        })
+    })
 }
-
-#[cfg(target_os = "linux")]
-pub(crate) static CLIPBOARD_TOOL: OnceLock<Option<&'static str>> = OnceLock::new();
 
 #[cfg(target_os = "linux")]
 pub(crate) fn decode_file_uri(uri: &str) -> std::path::PathBuf {
@@ -199,42 +207,26 @@ pub(crate) fn read_file_for_drop(app: AppHandle, path: String) -> Option<FileDro
 #[cfg(target_os = "linux")]
 #[tauri::command]
 pub(crate) fn read_clipboard_image(app: AppHandle) -> Option<ClipboardImage> {
-    log_message(&app, LogLevel::Info, "Solicitud de lectura de portapapeles");
-    if let Some(Some(tool)) = CLIPBOARD_TOOL.get() {
-        match read_clipboard_image_raw(tool) {
-            Some((data, mime)) => {
-                log_message(&app, LogLevel::Info, format!("Imagen leída del portapapeles ({}, {})", tool, mime));
-                return Some(ClipboardImage { data: base64_encode_bytes(&data), mime_type: mime.to_string() });
-            }
-            None => {
-                let types = list_clipboard_types(tool);
-                log_message(&app, LogLevel::Warn, format!(
-                    "{} disponible pero no hay imagen en el portapapeles. Tipos disponibles: {}",
-                    tool, types
-                ));
-                return None;
-            }
+    let Some(tool) = clipboard_tool() else {
+        log_message(&app, LogLevel::Warn, "No se encontró herramienta de portapapeles (wl-paste/xclip). Instalá wl-clipboard o xclip.");
+        return None;
+    };
+    match read_clipboard_image_raw(tool) {
+        Some((data, mime)) => {
+            log_message(&app, LogLevel::Info, format!("Imagen leída del portapapeles ({}, {})", tool, mime));
+            Some(ClipboardImage {
+                data: base64::engine::general_purpose::STANDARD.encode(&data),
+                mime_type: mime.to_string(),
+            })
+        }
+        None => {
+            log_message(&app, LogLevel::Warn, format!(
+                "No hay imagen en el portapapeles ({}). Tipos disponibles: {}",
+                tool, list_clipboard_types(tool)
+            ));
+            None
         }
     }
-    for tool in ["wl-paste", "xclip"] {
-        match read_clipboard_image_raw(tool) {
-            Some((data, mime)) => {
-                let _ = CLIPBOARD_TOOL.set(Some(tool));
-                log_message(&app, LogLevel::Info, format!("Herramienta detectada: {}. Imagen leída ({})", tool, mime));
-                return Some(ClipboardImage { data: base64_encode_bytes(&data), mime_type: mime.to_string() });
-            }
-            None => {
-                let types = list_clipboard_types(tool);
-                log_message(&app, LogLevel::Info, format!(
-                    "{}: no hay imagen en el portapapeles. Tipos disponibles: {}",
-                    tool, types
-                ));
-            }
-        }
-    }
-    let _ = CLIPBOARD_TOOL.set(None);
-    log_message(&app, LogLevel::Warn, "No se encontró herramienta de portapapeles (wl-paste/xclip). Instalá wl-clipboard o xclip.");
-    None
 }
 
 #[cfg(not(target_os = "linux"))]

@@ -24,8 +24,13 @@ pub const UPDATE_CHECK_INTERVAL_SECS: u64 = 2 * 60 * 60; // 2 horas
 // Notificaciones emergentes
 // ============================================================================
 /// Tiempo en ms que la ventana de notificación permanece visible
-pub const GITHUB_URL: &str = "https://github.com/marceloabelda/whataJOST";
 pub const NOTIFICATION_DISPLAY_TIME_MS: u64 = 5500;
+
+// ============================================================================
+// Acerca de
+// ============================================================================
+/// Repositorio del proyecto (diálogo "Acerca de" del tray)
+pub const GITHUB_URL: &str = "https://github.com/marceloabelda/whataJOST";
 
 // ============================================================================
 // Badge (icono del tray con número)

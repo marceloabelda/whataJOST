@@ -197,7 +197,8 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
     // Enable spellcheck and devtools on linux webviews
     #[cfg(any(target_os = "linux", target_os = "dragonfly", target_os = "freebsd", target_os = "netbsd", target_os = "openbsd"))]
     {
-        let _ = window.with_webview(|w| {
+        let app_perm = app.clone();
+        let _ = window.with_webview(move |w| {
             let webview = w.inner();
             if let Some(context) = webview.context() {
                 context.set_spell_checking_enabled(true);
@@ -214,9 +215,18 @@ pub(crate) fn create_whatsapp_window_impl(app: &AppHandle, label: &str, data_dir
             // (navigator.clipboard.write, getUserMedia para llamadas, etc.) porque wry
             // no conecta esta señal. "Copiar imagen" en WhatsApp Web usa el Clipboard API
             // y fallaba silenciosamente (la imagen nunca llegaba al portapapeles del SO).
+            // Se acepta todo menos la ubicación: portapapeles, cámara/micrófono
+            // (llamadas), enumerar dispositivos, etc. La ubicación no la usa
+            // WhatsApp Web y la pediría cualquier frame cargado (iframes de Meta).
+            use glib::prelude::ObjectExt;
             use webkit2gtk::PermissionRequestExt;
-            webview.connect_permission_request(|_wv, request| {
-                request.allow();
+            webview.connect_permission_request(move |_wv, request| {
+                if request.is::<webkit2gtk::GeolocationPermissionRequest>() {
+                    log_message(&app_perm, LogLevel::Warn, "Permiso de ubicación denegado");
+                    request.deny();
+                } else {
+                    request.allow();
+                }
                 true
             });
         });

@@ -328,9 +328,6 @@
                 });
             }
         }
-        if (!clipImage && window.__tauriClipboardImage) {
-            clipImage = { data: window.__tauriClipboardImage, mime_type: 'image/png' };
-        }
         if (!clipImage) {
             window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
                 level: 'warn',
@@ -374,9 +371,17 @@
         target.dispatchEvent(pasteEvent);
     }, true);
 
-    // Interceptar drag & drop para pegar archivos en la conversación
+    // Interceptar drag & drop para pegar archivos en la conversación.
+    // Solo arrastres de archivos o URIs (Nautilus, navegador): los arrastres
+    // internos de la página (ej. texto seleccionado al campo de escritura)
+    // siguen su camino normal.
+    const isFileDrag = (dt) => {
+        const types = dt ? Array.from(dt.types || []) : [];
+        return types.includes('Files') || types.includes('text/uri-list');
+    };
     var _dragLogged = false;
     document.addEventListener('dragover', function(e) {
+        if (!isFileDrag(e.dataTransfer)) return;
         e.preventDefault();
         e.stopPropagation();
         if (!_dragLogged) {
@@ -389,6 +394,7 @@
     }, true);
 
     document.addEventListener('drop', function(e) {
+        if (!isFileDrag(e.dataTransfer)) return;
         e.preventDefault();
         e.stopPropagation();
         _dragLogged = false;
@@ -475,26 +481,66 @@
         })();
     }, true);
 
-    // Intercept Notification API to show in-app toast
-    const _OrigNotification = window.Notification;
-    window.Notification = function(title, options) {
+    // Reemplazo de la Notification API: cada notificación va a Rust por IPC
+    // (show_notification) y se muestra como notificación nativa. Imita la
+    // interfaz real (close, onclick, addEventListener...) porque WhatsApp
+    // llama a close() y registra onclick. Al clickear la notificación nativa,
+    // Rust llama a window.__waNotifClick(id), que dispara el onclick que puso
+    // WhatsApp (abre ese chat).
+    const notifs = new Map();
+    let notifSeq = 0;
+    class WaNotification extends EventTarget {
+        constructor(title, options) {
+            super();
+            options = options || {};
+            this.title = title || '';
+            this.body = options.body || '';
+            this.tag = options.tag || '';
+            this.icon = options.icon || '';
+            this.data = options.data === undefined ? null : options.data;
+            this.onclick = null;
+            this.onclose = null;
+            this.onshow = null;
+            this.onerror = null;
+            this._id = ++notifSeq;
+            notifs.set(this._id, this);
+            // Rust solo muestra la última de cada cuenta: no hace falta guardar más.
+            while (notifs.size > 50) notifs.delete(notifs.keys().next().value);
+            try {
+                window.__TAURI_INTERNALS__.invoke('show_notification', {
+                    title: this.title,
+                    body: this.body,
+                    id: this._id
+                }).catch(function(e) { console.warn('[whataJOST] show_notification falló:', e); });
+            } catch(e) {
+                console.warn('[whataJOST] notification invoke failed:', e);
+            }
+        }
+        // No la borra de `notifs`: WhatsApp puede llamar a close() sola a los
+        // pocos segundos, pero la notificación nativa sigue en pantalla (o en
+        // la bandeja de GNOME) y su click tiene que seguir abriendo el chat.
+        close() {}
+        static get permission() { return 'granted'; }
+        static requestPermission(cb) {
+            if (typeof cb === 'function') cb('granted');
+            return Promise.resolve('granted');
+        }
+    }
+    window.Notification = WaNotification;
+    window.__waNotifClick = function(id) {
+        const n = notifs.get(id);
+        if (!n) return;
         try {
-            window.__TAURI_INTERNALS__.invoke('show_notification', {
-                title: title || '',
-                body: (options && options.body) ? options.body : ''
-            });
+            const ev = new Event('click', { cancelable: true });
+            if (typeof n.onclick === 'function') n.onclick.call(n, ev);
+            n.dispatchEvent(ev);
         } catch(e) {
-            console.warn('[whataJOST] notification invoke failed:', e);
+            window.__TAURI_INTERNALS__ && window.__TAURI_INTERNALS__.invoke('log_js', {
+                level: 'error',
+                message: 'Error en click de notificación: ' + (e.message || e)
+            });
         }
     };
-    window.Notification.permission = 'granted';
-    window.Notification.requestPermission = function() {
-        return Promise.resolve('granted');
-    };
-    Object.defineProperty(window.Notification, 'permission', {
-        get: () => 'granted',
-        configurable: true
-    });
 
 
     // Watch document.title for unread message count
@@ -545,7 +591,7 @@
     })();
 
     // --- Drag & drop: prevent WebView from intercepting file drops as navigation ---
-    document.addEventListener('dragover', function(e) { e.preventDefault(); }, false);
+    document.addEventListener('dragover', function(e) { if (isFileDrag(e.dataTransfer)) e.preventDefault(); }, false);
 
     // Bridge: Rust reads files dropped natively (GTK signal, Tauri DragDropEvent
     // or the file:// navigation fallback) and sends each one in base64 chunks

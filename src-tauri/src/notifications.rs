@@ -36,18 +36,21 @@ pub(crate) fn url_encode(s: &str) -> String {
 #[cfg(target_os = "linux")]
 pub(crate) struct NativeNotifSlot {
     pub(crate) id: Mutex<Option<u32>>,
+    /// Id JS (`WaNotification._id`) de la notificación que se ve ahora: al
+    /// clickear se le pasa a `window.__waNotifClick` para abrir ese chat.
+    pub(crate) js_id: Mutex<Option<u64>>,
     pub(crate) waiting: std::sync::atomic::AtomicBool,
 }
 
 #[cfg(target_os = "linux")]
 impl NativeNotifSlot {
     pub(crate) const fn new() -> Self {
-        Self { id: Mutex::new(None), waiting: std::sync::atomic::AtomicBool::new(false) }
+        Self { id: Mutex::new(None), js_id: Mutex::new(None), waiting: std::sync::atomic::AtomicBool::new(false) }
     }
 }
 
 #[cfg(target_os = "linux")]
-pub(crate) fn show_native_notification(app: &AppHandle, account2: bool, title: &str, body: &str) {
+pub(crate) fn show_native_notification(app: &AppHandle, account2: bool, title: &str, body: &str, js_id: Option<u64>) {
     static SLOTS: [NativeNotifSlot; 2] = [NativeNotifSlot::new(), NativeNotifSlot::new()];
     let slot = &SLOTS[account2 as usize];
 
@@ -72,6 +75,9 @@ pub(crate) fn show_native_notification(app: &AppHandle, account2: bool, title: &
     if let Ok(mut g) = slot.id.lock() {
         *g = Some(handle.id());
     }
+    if let Ok(mut g) = slot.js_id.lock() {
+        *g = js_id;
+    }
     if slot.waiting.swap(true, Ordering::SeqCst) {
         return; // ya hay un thread esperando el click sobre este id
     }
@@ -80,6 +86,12 @@ pub(crate) fn show_native_notification(app: &AppHandle, account2: bool, title: &
         handle.wait_for_action(|action| {
             if action == "default" {
                 if account2 { show_window_2(&app) } else { show_window(&app) }
+                // Disparar el onclick que registró WhatsApp: abre ese chat.
+                let label = if account2 { "whatsapp-web-2" } else { "whatsapp-web" };
+                let js_id = slot.js_id.lock().ok().and_then(|g| *g);
+                if let (Some(id), Some(win)) = (js_id, app.get_webview_window(label)) {
+                    let _ = win.eval(format!("window.__waNotifClick&&window.__waNotifClick({id})"));
+                }
             }
         });
         // Clickeada o descartada: la próxima notificación usa un id nuevo.
@@ -90,14 +102,14 @@ pub(crate) fn show_native_notification(app: &AppHandle, account2: bool, title: &
     });
 }
 
-pub(crate) fn show_notification_internal(app: &AppHandle, account2: bool, title: &str, body: &str) {
+pub(crate) fn show_notification_internal(app: &AppHandle, account2: bool, title: &str, body: &str, js_id: Option<u64>) {
     #[cfg(target_os = "linux")]
     {
-        show_native_notification(app, account2, title, body);
+        show_native_notification(app, account2, title, body, js_id);
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = account2;
+        let _ = (account2, js_id);
         show_toast_notification(app, title, body);
     }
 }
@@ -160,7 +172,7 @@ pub(crate) fn show_toast_notification(app: &AppHandle, title: &str, body: &str) 
 }
 
 #[tauri::command]
-pub(crate) fn show_notification(app: AppHandle, window: tauri::WebviewWindow, state: State<'_, NotificationPopupState>, title: String, body: String) {
+pub(crate) fn show_notification(app: AppHandle, window: tauri::WebviewWindow, state: State<'_, NotificationPopupState>, title: String, body: String, id: Option<u64>) {
     let is_enabled = state
         .0
         .lock()
@@ -174,7 +186,7 @@ pub(crate) fn show_notification(app: AppHandle, window: tauri::WebviewWindow, st
     }
     let account2 = window.label() == "whatsapp-web-2";
     let title = if account2 { format!("{title} (Cuenta 2)") } else { title };
-    show_notification_internal(&app, account2, &title, &body);
+    show_notification_internal(&app, account2, &title, &body, id);
 }
 
 #[tauri::command]
