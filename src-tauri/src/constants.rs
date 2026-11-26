@@ -35,8 +35,13 @@ pub const GITHUB_URL: &str = "https://github.com/marceloabelda/whataJOST";
 // ============================================================================
 // Badge (icono del tray con número)
 // ============================================================================
-/// Centro X del círculo de badge en el ícono del tray (64x64 px)
+/// Centro X del círculo de badge de la cuenta principal (rojo, a la derecha)
+/// en el ícono del tray (64x64 px)
 pub const TRAY_BADGE_CENTER_X: u32 = 48;
+
+/// Centro X del círculo de badge de la cuenta 2 (amarillo, a la izquierda).
+/// Mismo Y y radio que el principal.
+pub const TRAY_BADGE2_CENTER_X: u32 = 16;
 
 /// Centro Y del círculo de badge en el ícono del tray (64x64 px)
 pub const TRAY_BADGE_CENTER_Y: u32 = 16;
@@ -48,10 +53,14 @@ pub const TRAY_BADGE_RADIUS: f32 = 14.0;
 /// (calibrada para ícono 64x64, dígitos 5x7 pixels base)
 pub const TRAY_BADGE_FONT_SCALE: u32 = 2;
 
-/// Color rojo del badge (RGB, sin alpha)
-pub const TRAY_BADGE_RED: u8 = 255;
-pub const TRAY_BADGE_GREEN: u8 = 0;
-pub const TRAY_BADGE_BLUE: u8 = 0;
+/// Badge de la cuenta principal: círculo rojo, número blanco (RGB)
+pub const TRAY_BADGE_COLOR: [u8; 3] = [255, 0, 0];
+pub const TRAY_BADGE_TEXT: [u8; 3] = [255, 255, 255];
+
+/// Badge de la cuenta 2: círculo amarillo, número oscuro (el blanco no se
+/// lee sobre amarillo)
+pub const TRAY_BADGE2_COLOR: [u8; 3] = [255, 200, 0];
+pub const TRAY_BADGE2_TEXT: [u8; 3] = [30, 30, 30];
 
 // ============================================================================
 // Drag & drop

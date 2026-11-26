@@ -116,7 +116,7 @@ pub fn run() {
 
             app.manage(TrayBadgeState {
                 base_rgba: icon.rgba().to_vec(),
-                current_count: Mutex::new(0),
+                counts: Mutex::new([0, 0]),
             });
             let menu = build_tray_menu(app.handle())?;
 
@@ -168,6 +168,8 @@ pub fn run() {
                             let _ = win.hide();
                         }
                         update_tray_menu(app);
+                        // Mostrar u ocultar el badge amarillo de la cuenta 2.
+                        regenerate_tray_icon(app);
                     }
                     "autostart" => {
                         let enabled = app.autolaunch().is_enabled().unwrap_or(false);

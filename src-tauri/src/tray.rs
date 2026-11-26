@@ -2,7 +2,9 @@ use super::*;
 
 pub(crate) struct TrayBadgeState {
     pub(crate) base_rgba: Vec<u8>,
-    pub(crate) current_count: Mutex<u32>,
+    /// No leídos por cuenta: [principal, cuenta 2]. Antes era un solo
+    /// contador y las dos ventanas se lo pisaban.
+    pub(crate) counts: Mutex<[u32; 2]>,
 }
 
 pub(crate) const DIGIT_PATTERNS: [[u8; 7]; 10] = [
@@ -70,7 +72,7 @@ pub(crate) fn draw_filled_circle(rgba: &mut [u8], img_w: u32, img_h: u32,
 }
 
 pub(crate) fn draw_char(rgba: &mut [u8], img_w: u32, start_x: f32, start_y: f32,
-             pattern: &[u8; 7], scale: u32) {
+             pattern: &[u8; 7], scale: u32, color: [u8; 3]) {
     let s = scale as f32;
     for row in 0..7u32 {
         let bits = pattern[row as usize];
@@ -83,7 +85,7 @@ pub(crate) fn draw_char(rgba: &mut [u8], img_w: u32, start_x: f32, start_y: f32,
                         set_pixel(rgba, img_w,
                             (px + dx as f32) as u32,
                             (py + dy as f32) as u32,
-                            255, 255, 255, 255);
+                            color[0], color[1], color[2], 255);
                     }
                 }
             }
@@ -91,7 +93,7 @@ pub(crate) fn draw_char(rgba: &mut [u8], img_w: u32, start_x: f32, start_y: f32,
     }
 }
 
-pub(crate) fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, count: u32) {
+pub(crate) fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, count: u32, color: [u8; 3]) {
     let text: Vec<char> = if count > 9 {
         "9+".chars().collect()
     } else if count == 0 {
@@ -111,24 +113,40 @@ pub(crate) fn draw_count_text(rgba: &mut [u8], img_w: u32, cx: f32, cy: f32, cou
             '+' => &PLUS_PATTERN,
             _ => continue,
         };
-        draw_char(rgba, img_w, start_x + i as f32 * (char_w + spacing), start_y, pat, TRAY_BADGE_FONT_SCALE);
+        draw_char(rgba, img_w, start_x + i as f32 * (char_w + spacing), start_y, pat, TRAY_BADGE_FONT_SCALE, color);
     }
 }
 
+fn draw_badge(rgba: &mut [u8], cx: u32, count: u32, color: [u8; 3], text: [u8; 3]) {
+    if count == 0 {
+        return;
+    }
+    let (cx, cy) = (cx as f32, TRAY_BADGE_CENTER_Y as f32);
+    draw_filled_circle(rgba, 64, 64, cx, cy, TRAY_BADGE_RADIUS, color[0], color[1], color[2]);
+    draw_count_text(rgba, 64, cx, cy, count, text);
+}
+
+/// Badge rojo a la derecha con los no leídos de la cuenta principal y, si la
+/// cuenta 2 está habilitada, uno amarillo a la izquierda con los suyos.
 pub(crate) fn regenerate_tray_icon(app: &AppHandle) {
     let badge = app.state::<TrayBadgeState>();
-    let count = badge.current_count
+    let [count1, count2] = badge.counts
         .lock()
         .map(|c| *c)
         .unwrap_or_else(|e| {
             eprintln!("[regenerate_tray_icon] Mutex poisoned: {}", e);
-            0
+            [0, 0]
         });
+    let account2_visible = app.state::<Account2VisibleState>()
+        .0
+        .lock()
+        .map(|v| *v)
+        .unwrap_or(false);
     let mut rgba = badge.base_rgba.clone();
 
-    if count > 0 {
-        draw_filled_circle(&mut rgba, 64, 64, TRAY_BADGE_CENTER_X as f32, TRAY_BADGE_CENTER_Y as f32, TRAY_BADGE_RADIUS, TRAY_BADGE_RED, TRAY_BADGE_GREEN, TRAY_BADGE_BLUE);
-        draw_count_text(&mut rgba, 64, TRAY_BADGE_CENTER_X as f32, TRAY_BADGE_CENTER_Y as f32, count);
+    draw_badge(&mut rgba, TRAY_BADGE_CENTER_X, count1, TRAY_BADGE_COLOR, TRAY_BADGE_TEXT);
+    if account2_visible {
+        draw_badge(&mut rgba, TRAY_BADGE2_CENTER_X, count2, TRAY_BADGE2_COLOR, TRAY_BADGE2_TEXT);
     }
 
     let tray = app.state::<TrayIcon>();
@@ -209,17 +227,18 @@ pub(crate) fn update_tray_menu(app: &AppHandle) {
 }
 
 #[tauri::command]
-pub(crate) fn update_unread_count(app: AppHandle, badge_state: State<'_, TrayBadgeState>, count: u32) {
+pub(crate) fn update_unread_count(app: AppHandle, window: tauri::WebviewWindow, badge_state: State<'_, TrayBadgeState>, count: u32) {
+    let idx = usize::from(window.label() == "whatsapp-web-2");
     {
-        let mut current = match badge_state.current_count.lock() {
+        let mut counts = match badge_state.counts.lock() {
             Ok(c) => c,
             Err(e) => {
                 eprintln!("[update_unread_count] Mutex poisoned: {}", e);
                 return;
             }
         };
-        if *current == count { return; }
-        *current = count;
+        if counts[idx] == count { return; }
+        counts[idx] = count;
     }
     regenerate_tray_icon(&app);
 }

@@ -223,7 +223,11 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 El menú se reconstruye completamente en cada `update_tray_menu()` → `build_tray_menu()`.
 
 **Badge de no leídos (Rust):**
-`regenerate_tray_icon` dibuja un círculo rojo (radio 14, centro 48,16) con número pixel art (5×7, escala 2) sobre el RGBA base (64×64 px). Solo cuando `count > 0`. Muestra `9+` para counts > 9.
+`TrayBadgeState.counts` guarda los no leídos **por cuenta** (`[principal, cuenta 2]`); `update_unread_count` recibe la `WebviewWindow` que lo invoca y actualiza la posición según su label (antes era un solo contador y las dos ventanas se lo pisaban). `regenerate_tray_icon` dibuja sobre el RGBA base (64×64 px), con número pixel art (5×7, escala 2):
+- **Cuenta principal:** círculo rojo (radio 14, centro 48,16, arriba a la derecha) con número blanco.
+- **Cuenta 2:** círculo amarillo (centro 16,16, arriba a la izquierda) con número oscuro, **solo si la cuenta 2 está habilitada** (`Account2VisibleState`). Al togglearla desde el tray se regenera el ícono.
+
+Cada badge se dibuja solo con count > 0 y muestra `9+` para counts > 9. Colores y posiciones en `constants.rs` (`TRAY_BADGE*`).
 
 `draw_filled_circle` usa anti-aliasing manual via `blend_pixel`. Ningún crate de imágenes.
 
@@ -275,7 +279,7 @@ Flujo:
 | `save_file(id, file_name)` | (async) Abre `rfd::AsyncFileDialog` y mueve el temporal ahí; si el diálogo no aparece (xdg-portal) o se cancela, lo mueve a `~/Downloads/WhataJOST/` sin pisar archivos existentes y lo registra en logs |
 | `read_clipboard_image` | Lee imagen del portapapeles del sistema con `wl-paste` o `xclip` (detecta herramienta disponible con `OnceLock`) |
 | `read_file_for_drop(path)` | Lee un archivo local por path (usado desde el DOM drop handler cuando `dataTransfer.files` está vacío en Linux) |
-| `update_unread_count(count)` | Renderiza badge numérico sobre el ícono de bandeja (pixel art en RGBA, sin librerías de imágenes) |
+| `update_unread_count(count)` | Guarda los no leídos de la cuenta que lo invoca y renderiza los badges sobre el ícono de bandeja (rojo = principal, amarillo = cuenta 2; pixel art en RGBA, sin librerías de imágenes) |
 | `show_notification(title, body, id)` | Linux: notificación nativa D-Bus. Otras: reusa (o crea) la ventana `notification` (HTML transparente, always-on-top) que se auto-oculta a los 5,5 s |
 | `close_notification` | Oculta la ventana de notificación (no la destruye, para reusarla) |
 | `open_whatsapp` | Muestra y enfoca la ventana principal, oculta la notificación |
