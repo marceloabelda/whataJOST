@@ -135,7 +135,10 @@ static DROP_INJECT_COUNTER: AtomicU64 = AtomicU64::new(0);
 /// `__waDrop*` en inject.js). Cada archivo se lee de a `DROP_CHUNK_BYTES` y
 /// viaja en varios `eval` chicos: un solo `eval` con el archivo entero en
 /// base64 obligaba a WebKit a parsear un script ~1,33× el tamaño del archivo
-/// (un video de 50 MB trababa la UI). Llamar desde un thread aparte.
+/// (un video de 50 MB trababa la UI). Cada trozo espera la confirmación de la
+/// página antes de leer el siguiente (`eval_and_wait`): si no, el archivo
+/// entero quedaba encolado en memoria de una. Llamar desde un thread aparte
+/// (bloquea esperando a la página; en el hilo principal se colgaría).
 pub(crate) fn inject_files_into_page(app: &AppHandle, win: &tauri::WebviewWindow, paths: &[std::path::PathBuf]) {
     let mut ids = Vec::new();
     for path in paths {
@@ -172,8 +175,23 @@ fn inject_file_chunks(win: &tauri::WebviewWindow, id: u64, path: &std::path::Pat
         }
         // base64 solo usa [A-Za-z0-9+/=]: va directo entre comillas.
         let b64 = base64::engine::general_purpose::STANDARD.encode(&buf[..n]);
-        let _ = win.eval(format!("window.__waDropChunk&&window.__waDropChunk({id},\"{b64}\")"));
+        eval_and_wait(win, format!(
+            "(function(){{try{{window.__waDropChunk&&window.__waDropChunk({id},\"{b64}\");}}catch(e){{}}return 1;}})()"
+        ))?;
     }
+}
+
+/// Ejecuta `js` en la página y espera a que termine. wry llama al callback
+/// siempre (también si el script tira error), salvo que la página todavía no
+/// haya cargado: para eso está el timeout.
+fn eval_and_wait(win: &tauri::WebviewWindow, js: String) -> std::io::Result<()> {
+    let (tx, rx) = std::sync::mpsc::channel();
+    win.eval_with_callback(js, move |_| {
+        let _ = tx.send(());
+    })
+    .map_err(|e| std::io::Error::other(e.to_string()))?;
+    rx.recv_timeout(Duration::from_secs(DROP_CHUNK_ACK_TIMEOUT_SECS))
+        .map_err(|_| std::io::Error::new(std::io::ErrorKind::TimedOut, "la página no confirmó el trozo"))
 }
 
 #[tauri::command]

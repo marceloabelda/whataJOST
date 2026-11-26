@@ -165,7 +165,14 @@ pub fn run() {
                                 show_window_2(app);
                             }
                         } else if let Some(win) = app.get_webview_window("whatsapp-web-2") {
-                            let _ = win.hide();
+                            // Cerrar de verdad (no ocultar): libera el proceso de
+                            // WebKit de la cuenta 2 (cientos de MB). La sesión vive
+                            // en disco (account-2/), al rehabilitarla solo recarga.
+                            // destroy() no pasa por CloseRequested (que la ocultaría).
+                            let _ = win.destroy();
+                            if let Ok(mut counts) = app.state::<TrayBadgeState>().counts.lock() {
+                                counts[1] = 0;
+                            }
                         }
                         update_tray_menu(app);
                         // Mostrar u ocultar el badge amarillo de la cuenta 2.
