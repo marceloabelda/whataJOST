@@ -28,13 +28,13 @@ jobs:
       actions: read     # requerido por SignPath para descargar artifacts
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
-      - uses: pnpm/action-setup@v4
+      - uses: pnpm/action-setup@v6
         with:
           version: 10
 
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v7
         with:
           node-version: 22
           cache: pnpm
@@ -74,7 +74,7 @@ jobs:
       - name: Subir MSI sin firmar (entrada para SignPath)
         id: upload-unsigned
         if: matrix.name == 'windows'
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: msi-unsigned
           path: src-tauri/target/release/bundle/msi/*.msi
@@ -112,7 +112,7 @@ jobs:
 
       # ── Subir artefactos finales (ambas plataformas) ──────────────────────
       - name: Subir artefactos
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bundles-${{ matrix.name }}
           path: |
@@ -131,10 +131,10 @@ jobs:
       contents: write
 
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@v7
 
       - name: Descargar todos los artefactos
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
           path: artifacts
           merge-multiple: true
@@ -194,7 +194,7 @@ jobs:
           EOF
 
       - name: Crear GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           files: |
             artifacts/**/*.deb
