@@ -74,10 +74,10 @@ El script vive en `src-tauri/src/inject.js` y se embebe en el binario con `inclu
 
 > **⚠ Por qué en partes y no IPC binario:** la CSP de WhatsApp (`connect-src`) no permite `ipc://`, así que en la ventana `whatsapp-web` el IPC de Tauri siempre cae a `postMessage` con JSON. Ahí un `Uint8Array` se serializa como array de números (~3,5× el tamaño), peor que base64 (1,33×). Antes se mandaba el archivo entero en un solo base64: un video de 100 MB generaba varias copias completas simultáneas (data URL, split, JSON, `String` y `Vec` en Rust) y la decodificación corría en el hilo principal. En partes, el pico extra es ~un trozo.
 
-**`save_file` (Rust):**
-1. Abre `rfd::FileDialog::new().set_file_name(&file_name).save_file()`.
-2. Mueve el temporal al destino con `move_upload` (`rename`; si falla por estar en otro filesystem, copia y borra).
-3. Si el diálogo no aparece (sin xdg-portal activo en la sesión) o el usuario cancela → lo mueve a `~/Downloads/WhataJOST/<fileName>` como fallback y lo registra en logs.
+**`save_file` (Rust, `async fn`):**
+1. Abre `rfd::AsyncFileDialog::new().set_file_name(&file_name).save_file().await`. Es async a propósito: como comando síncrono corría en el hilo principal y el diálogo (y la copia entre filesystems) congelaban las ventanas de WhatsApp mientras estaba abierto.
+2. Mueve el temporal al destino con `move_upload` (`rename`; si falla por estar en otro filesystem, copia y borra) dentro de `spawn_blocking` (`save_file_impl`).
+3. Si el diálogo no aparece (sin xdg-portal activo en la sesión) o el usuario cancela → lo mueve a `~/Downloads/WhataJOST/` como fallback con `unique_path` (agrega `(1)`, `(2)`… para no pisar un archivo con el mismo nombre) y lo registra en logs.
 4. Siempre borra el temporal al final (si ya se movió no existe; si hubo error, no queda basura).
 
 > **⚠ No tocar:** el delay de 60 s en `blobStore` (necesario para archivos grandes), el override de `prototype.click` (es el camino principal de WhatsApp), el `on_navigation` para `blob:` (es el safety net Rust), y el orden de los tres interceptores JS. Al agregar comandos IPC nuevos, sumarlos a `permissions/default.toml` (ver "ACL de Tauri 2.11.1+").
@@ -90,7 +90,7 @@ El script vive en `src-tauri/src/inject.js` y se embebe en el binario con `inclu
 
 **Toggle en el tray:** "Descargar PDF abre con visor externo" (`CheckMenuItem` id `toggle_pdf_reader`, `build_tray_menu`). Estado en `PdfExternalReaderState` (`Mutex<bool>`), persistido en `config.json` como `pdf_external_reader` (default `false`) vía `load_pdf_external_reader`/`save_pdf_external_reader`.
 
-**Mecanismo (todo dentro de `save_file`,):** el flujo de blobs ya existente termina siempre invocando la IPC `save_file(id, file_name)`, sin importar si el blob viene de un documento, una imagen o cualquier otro archivo. Al principio de `save_file`, si `file_name` termina en `.pdf` (case-insensitive) **y** el toggle está activo:
+**Mecanismo (todo dentro de `save_file`):** el flujo de blobs ya existente termina siempre invocando la IPC `save_file(id, file_name)`, sin importar si el blob viene de un documento, una imagen o cualquier otro archivo. Al principio de `save_file`, si `file_name` termina en `.pdf` (case-insensitive) **y** el toggle está activo:
 1. Mueve el temporal directo a `~/Downloads/WhataJOST/<nombre>` (vía `whatajost_downloads_dir`, helper compartido con el fallback normal de `save_file`), evitando pisar archivos existentes con `unique_path` (agrega `(1)`, `(2)`, etc.).
 2. Abre el archivo con `opener().open_path(...)` (con fallback a `xdg-open` en Linux si falla, mismo patrón que "Links externos").
 3. Devuelve el path sin pasar por `rfd::FileDialog` — no aparece ningún diálogo.
@@ -193,7 +193,7 @@ Despacha un `ClipboardEvent('paste')` sintético. Usa `window.__waLastFocusedEdi
 **Cierre de ventana → hide (`on_window_event`):**
 `on_window_event` con `CloseRequested` llama `api.prevent_close()` + `window.hide()`. La ventana de WhatsApp nunca se destruye; solo se oculta. Esto es intencional: destruirla y recrearla es lento y pierde la sesión si el proceso WebKit muere.
 
-**`show_window`:** Llama `unminimize()` → `set_always_on_top(true)` → `show()` → `set_focus()` → (150 ms después, en otro thread) `set_always_on_top(false)`. El truco `always_on_top` es necesario en algunos WMs (ej. i3, algunos GNOME) que ignoran `set_focus()` sin que la ventana sea temporalmente top-level.
+**`show_window` / `show_window_2`:** Ambas usan `bring_to_front(app, label)` (`window.rs`), que llama `unminimize()` → `set_always_on_top(true)` → `show()` → `set_focus()` → (150 ms después, en otro thread) `set_always_on_top(false)`. El truco `always_on_top` es necesario en algunos WMs (ej. i3, algunos GNOME) que ignoran `set_focus()` sin que la ventana sea temporalmente top-level.
 
 > **⚠ No tocar:** el orden `always_on_top(true)` → `show` → `focus` → `always_on_top(false)`. Quitar cualquier paso puede hacer que la ventana no aparezca al frente en ciertos escritorios.
 
@@ -253,10 +253,10 @@ Flujo:
 2. Si hay update: diálogo `OkCancel` con la versión nueva.
 3. Descarga el paquete (`update.download(...)`).
 4. **Linux, corriendo como AppImage** (detectado con `std::env::var_os("APPIMAGE")`, la variable que el propio runtime de AppImage setea): se usa `update.install(bytes)` — el instalador que ya trae `tauri-plugin-updater`, que hace un `rename` del AppImage actual a un backup temporal, escribe los bytes nuevos en el path original y restaura los permisos (evita "text file busy" porque nunca escribe sobre el inode que está corriendo). No necesita root. Si tiene éxito, `h.restart()` (que también es AppImage-aware: relanza el path de `$APPIMAGE`, no el binario montado en el `/tmp` de FUSE).
-5. **Linux, instalado como .deb** (cualquier otro caso): se guarda el paquete a un temp file (`.deb`) y 4 intentos de instalación en cascada:
+5. **Linux, instalado como .deb** (cualquier otro caso): se guarda el paquete en `<app_cache_dir>/actualizaciones/` (se vacía antes de cada actualización) y 4 intentos de instalación en cascada. No va a `/tmp`: ahí la ruta es predecible y otro usuario local podría crear o cambiar el archivo antes de que `pkexec` lo instale como root.
    - `pkexec apt install --yes <file>` (Ubuntu moderno, maneja dependencias)
    - `pkexec dpkg -i <file>` (fallback sin resolver deps)
-   - `zenity --password` + `sudo -S dpkg -i <file>` (fallback sin pkexec)
+   - `zenity --password` + `sudo -S dpkg -i <file>` (fallback sin pkexec; si el usuario cancela zenity o deja la contraseña vacía, no se corre `sudo`)
    - `xdg-open <file>` (abre el instalador gráfico del sistema; muestra aviso al usuario para que complete manualmente)
 6. **Windows:** `msiexec /i <file> /quiet`.
 7. Si la instalación fue exitosa (deb o Windows): `h.restart()`.
@@ -272,7 +272,7 @@ Flujo:
 | `save_file_begin` | Crea el archivo temporal de una descarga y devuelve su `id` |
 | `save_file_chunk(id, data)` | (async) Decodifica un trozo base64 y lo agrega al temporal |
 | `save_file_abort(id)` | Borra el temporal de una descarga fallida |
-| `save_file(id, file_name)` | Abre `rfd::FileDialog` y mueve el temporal ahí; si el diálogo no aparece (xdg-portal), lo mueve a `~/Downloads/WhataJOST/` y lo registra en logs |
+| `save_file(id, file_name)` | (async) Abre `rfd::AsyncFileDialog` y mueve el temporal ahí; si el diálogo no aparece (xdg-portal) o se cancela, lo mueve a `~/Downloads/WhataJOST/` sin pisar archivos existentes y lo registra en logs |
 | `read_clipboard_image` | Lee imagen del portapapeles del sistema con `wl-paste` o `xclip` (detecta herramienta disponible con `OnceLock`) |
 | `read_file_for_drop(path)` | Lee un archivo local por path (usado desde el DOM drop handler cuando `dataTransfer.files` está vacío en Linux) |
 | `update_unread_count(count)` | Renderiza badge numérico sobre el ícono de bandeja (pixel art en RGBA, sin librerías de imágenes) |
@@ -280,7 +280,7 @@ Flujo:
 | `close_notification` | Oculta la ventana de notificación (no la destruye, para reusarla) |
 | `open_whatsapp` | Muestra y enfoca la ventana principal, oculta la notificación |
 | `open_external(url)` | Abre en el navegador/app del sistema un link que el usuario clickeó (solo `http`, `https`, `mailto`, `tel`) |
-| `log_js(level, message)` | Recibe logs del script JS y los agrega al buffer en memoria (capado a `MAX_LOG_ENTRIES` = 500, `VecDeque`) |
+| `log_js(level, message)` | Recibe logs del script JS y los agrega al buffer en memoria (capado a `MAX_LOG_ENTRIES` = 500, `VecDeque`). La hora de cada entrada es local (`chrono::Local`), no UTC |
 | `get_logs` | Devuelve todos los logs del buffer (usada por `logs.html`) |
 | `clear_logs` | Vacía el buffer de logs |
 | `open_logs` | Abre la ventana del visor de logs centrada en pantalla |
@@ -315,6 +315,7 @@ La ventana `whatsapp-web` carga una URL externa; el IPC solo funciona cuando la 
 - `webkit2gtk` v2 (Linux) — corrección ortográfica + devtools en producción
 - `glib` v0.18 + `gtk` v0.18 (Linux) — señales GTK para interceptar drag & drop a nivel nativo (ya eran transitivas vía webkit2gtk; se agregan como deps directas para usar `WidgetExt::connect_drag_data_received`)
 - `mime_guess` — detección de MIME type para archivos arrastrados desde el SO
+- `chrono` (solo feature `clock`) — hora local en los logs; ya venía como dependencia transitiva
 - `notify-rust` v4 (Linux) — notificaciones nativas por D-Bus (usa `zbus` 5, que ya venía por `rfd`)
 - `wl-clipboard` (`wl-paste`) / `xclip` — lectura de imágenes del portapapeles del sistema (dependencias `.deb`)
 

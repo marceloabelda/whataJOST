@@ -109,17 +109,40 @@ pub(crate) fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                 return;
                             }
 
-                            // Guardar en un archivo temporal
+                            // Guardar el paquete en el directorio de caché de la app
+                            // (~/.cache/<app>/actualizaciones), no en /tmp: ahí la ruta es
+                            // predecible y otro usuario local podría crear o cambiar el
+                            // archivo antes de que pkexec lo instale como root.
                             #[cfg(target_os = "linux")]
-                            let tmp = std::env::temp_dir().join(format!(
-                                "whatajost_update_{}.deb",
-                                update.version
-                            ));
+                            let ext = "deb";
                             #[cfg(target_os = "windows")]
-                            let tmp = std::env::temp_dir().join(format!(
-                                "whatajost_update_{}.msi",
-                                update.version
-                            ));
+                            let ext = "msi";
+                            let tmp = match h.path().app_cache_dir() {
+                                Ok(dir) => dir.join("actualizaciones"),
+                                Err(e) => {
+                                    h.dialog()
+                                        .message(if es { format!("Error al guardar el paquete: {e}") } else { format!("Failed to save the package: {e}") })
+                                        .title(t("dlg_title_error"))
+                                        .kind(MessageDialogKind::Error)
+                                        .buttons(MessageDialogButtons::Ok)
+                                        .show(|_| {});
+                                    return;
+                                }
+                            };
+                            // Borrar paquetes de actualizaciones anteriores.
+                            let _ = std::fs::remove_dir_all(&tmp);
+                            let tmp = match std::fs::create_dir_all(&tmp) {
+                                Ok(()) => tmp.join(format!("whatajost_update_{}.{ext}", update.version)),
+                                Err(e) => {
+                                    h.dialog()
+                                        .message(if es { format!("Error al guardar el paquete: {e}") } else { format!("Failed to save the package: {e}") })
+                                        .title(t("dlg_title_error"))
+                                        .kind(MessageDialogKind::Error)
+                                        .buttons(MessageDialogButtons::Ok)
+                                        .show(|_| {});
+                                    return;
+                                }
+                            };
                             if let Err(e) = std::fs::write(&tmp, &bytes) {
                                 h.dialog()
                                     .message(if es { format!("Error al guardar el paquete: {e}") } else { format!("Failed to save the package: {e}") })
@@ -154,12 +177,16 @@ pub(crate) fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                 // Intento 3: zenity para pedir contraseña + sudo -S
                                 if failed(&result) {
                                     let password_title = if es { "whataJOST - Instalar actualización" } else { "whataJOST - Install update" };
+                                    // Si el usuario cancela, zenity sale con código != 0:
+                                    // no correr sudo con una contraseña vacía.
                                     let password = std::process::Command::new("zenity")
                                         .args(["--password", "--title", password_title])
                                         .output()
                                         .ok()
+                                        .filter(|out| out.status.success())
                                         .and_then(|out| String::from_utf8(out.stdout).ok())
-                                        .map(|s| s.trim().to_string());
+                                        .map(|s| s.trim_end_matches(['\r', '\n']).to_string())
+                                        .filter(|s| !s.is_empty());
                                     if let Some(pass) = password {
                                         result = std::process::Command::new("sudo")
                                             .args(["-S", "dpkg", "-i"])
@@ -169,7 +196,7 @@ pub(crate) fn check_for_updates_impl(app: &AppHandle, silent: bool) {
                                             .and_then(|mut child| {
                                                 use std::io::Write;
                                                 if let Some(ref mut stdin) = child.stdin {
-                                                    let _ = stdin.write_all(pass.as_bytes());
+                                                    let _ = stdin.write_all(format!("{pass}\n").as_bytes());
                                                 }
                                                 child.wait()
                                             });

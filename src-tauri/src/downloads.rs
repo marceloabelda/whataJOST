@@ -112,14 +112,38 @@ pub(crate) fn save_file_abort(app: AppHandle, id: u64) {
     }
 }
 
+// async: un comando síncrono corre en el hilo principal, y el diálogo de
+// guardar (y la copia entre filesystems) congelaban las ventanas de WhatsApp
+// mientras duraban.
 #[tauri::command]
-pub(crate) fn save_file(app: AppHandle, id: u64, file_name: String) -> Result<String, String> {
+pub(crate) async fn save_file(app: AppHandle, id: u64, file_name: String) -> Result<String, String> {
     let tmp = save_upload_path(&app, id)?;
     let safe_name = sanitize_file_name(&file_name);
     if safe_name != file_name {
         log_message(&app, LogLevel::Warn, format!("Nombre de archivo saneado: {:?} → {:?}", file_name, safe_name));
     }
-    let result = save_file_impl(&app, &tmp, &safe_name);
+    let pdf_external = safe_name.to_lowercase().ends_with(".pdf")
+        && app.state::<PdfExternalReaderState>()
+            .0
+            .lock()
+            .map(|s| *s)
+            .unwrap_or(false);
+    // `None` = guardar en ~/Downloads/WhataJOST sin preguntar.
+    let chosen = if pdf_external {
+        None
+    } else {
+        rfd::AsyncFileDialog::new()
+            .set_file_name(&safe_name)
+            .save_file()
+            .await
+            .map(|h| h.path().to_path_buf())
+    };
+    let tmp2 = tmp.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        save_file_impl(&app, &tmp2, &safe_name, pdf_external, chosen)
+    })
+    .await
+    .unwrap_or_else(|e| Err(format!("Error interno al guardar: {e}")));
     // Si se movió ya no existe; si hubo error o cancelación, no dejar basura.
     let _ = std::fs::remove_file(&tmp);
     result
@@ -144,71 +168,55 @@ pub(crate) fn sanitize_file_name(name: &str) -> String {
     }
 }
 
-pub(crate) fn save_file_impl(app: &AppHandle, tmp: &std::path::Path, file_name: &str) -> Result<String, String> {
-    let pdf_external = file_name.to_lowercase().ends_with(".pdf")
-        && app.state::<PdfExternalReaderState>()
-            .0
-            .lock()
-            .map(|s| *s)
-            .unwrap_or(false);
+/// Mueve el temporal a su destino (bloqueante: correr fuera del hilo principal).
+/// `chosen` es la ruta elegida en el diálogo; si es `None` (modo PDF externo,
+/// diálogo cancelado o sin xdg-portal) va a `~/Downloads/WhataJOST`, sin pisar
+/// archivos existentes.
+pub(crate) fn save_file_impl(
+    app: &AppHandle,
+    tmp: &std::path::Path,
+    file_name: &str,
+    pdf_external: bool,
+    chosen: Option<std::path::PathBuf>,
+) -> Result<String, String> {
+    let fallback = chosen.is_none();
+    let dest = match chosen {
+        Some(p) => p,
+        None => {
+            let dir = whatajost_downloads_dir(app).inspect_err(|e| {
+                log_message(app, LogLevel::Error, e);
+            })?;
+            unique_path(&dir, file_name)
+        }
+    };
+    move_upload(tmp, &dest).map_err(|e| {
+        let msg = format!("Error al guardar archivo: {e}");
+        log_message(app, LogLevel::Error, &msg);
+        msg
+    })?;
+    let path_str = dest.to_string_lossy().to_string();
 
-    if pdf_external {
-        let dir = whatajost_downloads_dir(app).inspect_err(|e| {
-            log_message(app, LogLevel::Error, e);
-        })?;
-        let path = unique_path(&dir, file_name);
-        move_upload(tmp, &path).map_err(|e| {
-            let msg = format!("Error al guardar PDF: {e}");
-            log_message(app, LogLevel::Error, &msg);
-            msg
-        })?;
-        let path_str = path.to_string_lossy().to_string();
-        log_message(app, LogLevel::Info, format!("PDF guardado en {}, abriendo con lector externo", path_str));
-        if let Err(e) = app.opener().open_path(&path_str, None::<&str>) {
-            log_message(app, LogLevel::Warn, format!("opener.open_path falló ({}), usando xdg-open...", e));
-            #[cfg(target_os = "linux")]
-            let _ = std::process::Command::new("xdg-open")
-                .arg(&path_str)
-                .stdin(std::process::Stdio::null())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .spawn();
+    if !pdf_external {
+        if fallback {
+            log_message(app, LogLevel::Info, format!("Archivo guardado en fallback (diálogo cancelado o no disponible): {}", path_str));
+        } else {
+            log_message(app, LogLevel::Info, format!("Archivo guardado: {}", path_str));
         }
         return Ok(path_str);
     }
 
-    let path = rfd::FileDialog::new()
-        .set_file_name(file_name)
-        .save_file();
-
-    match path {
-        Some(p) => {
-            move_upload(tmp, &p)
-                .map_err(|e| {
-                    let msg = format!("Error al guardar archivo: {e}");
-                    log_message(app, LogLevel::Error, &msg);
-                    msg
-                })?;
-            let path_str = p.to_string_lossy().to_string();
-            log_message(app, LogLevel::Info, format!("Archivo guardado: {}", path_str));
-            Ok(path_str)
-        }
-        None => {
-            let subdir = whatajost_downloads_dir(app).inspect_err(|e| {
-                log_message(app, LogLevel::Error, e);
-            })?;
-            let fallback = subdir.join(file_name);
-            move_upload(tmp, &fallback)
-                .map_err(|e| {
-                    let msg = format!("Error al guardar archivo: {e}");
-                    log_message(app, LogLevel::Error, &msg);
-                    msg
-                })?;
-            let path_str = fallback.to_string_lossy().to_string();
-            log_message(app, LogLevel::Info, format!("Archivo guardado en fallback (sin diálogo): {}", path_str));
-            Ok(path_str)
-        }
+    log_message(app, LogLevel::Info, format!("PDF guardado en {}, abriendo con lector externo", path_str));
+    if let Err(e) = app.opener().open_path(&path_str, None::<&str>) {
+        log_message(app, LogLevel::Warn, format!("opener.open_path falló ({}), usando xdg-open...", e));
+        #[cfg(target_os = "linux")]
+        let _ = std::process::Command::new("xdg-open")
+            .arg(&path_str)
+            .stdin(std::process::Stdio::null())
+            .stdout(std::process::Stdio::null())
+            .stderr(std::process::Stdio::null())
+            .spawn();
     }
+    Ok(path_str)
 }
 
 #[cfg(test)]

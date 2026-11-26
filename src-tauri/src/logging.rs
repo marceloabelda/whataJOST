@@ -17,15 +17,9 @@ pub(crate) struct LogEntry {
 
 pub(crate) struct LogState(pub(crate) Arc<Mutex<VecDeque<LogEntry>>>);
 
+/// Hora local (no UTC): los logs se comparan con la hora real en que pasó algo.
 pub(crate) fn format_timestamp() -> String {
-    let secs = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_secs();
-    let h = (secs / 3600) % 24;
-    let m = (secs / 60) % 60;
-    let s = secs % 60;
-    format!("{:02}:{:02}:{:02}", h, m, s)
+    chrono::Local::now().format("%H:%M:%S").to_string()
 }
 
 pub(crate) fn log_message(app: &AppHandle, level: LogLevel, message: impl Into<String>) {

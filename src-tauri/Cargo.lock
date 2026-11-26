@@ -5071,6 +5071,7 @@ name = "whatajost"
 version = "1.2.20"
 dependencies = [
  "base64 0.22.1",
+ "chrono",
  "glib",
  "gtk",
  "mime_guess",

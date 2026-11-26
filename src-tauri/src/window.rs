@@ -61,28 +61,29 @@ pub(crate) fn navigate_whatsapp(app: &AppHandle, url: &str) {
 }
 
 pub(crate) fn show_window(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("whatsapp-web") {
-        let _ = window.unminimize();
-        let _ = window.set_always_on_top(true);
-        let _ = window.show();
-        let _ = window.set_focus();
-        let win = window.clone();
-        std::thread::spawn(move || {
-            std::thread::sleep(std::time::Duration::from_millis(GTK_WINDOW_RESTORE_DELAY_MS));
-            let _ = win.set_always_on_top(false);
-        });
-    } else {
+    if !bring_to_front(app, "whatsapp-web") {
         log_message(app, LogLevel::Error, "No se encontró la ventana de WhatsApp");
     }
 }
 
 pub(crate) fn show_window_2(app: &AppHandle) {
-    if let Some(window) = app.get_webview_window("whatsapp-web-2") {
-        let _ = window.set_always_on_top(true);
-        let _ = window.show();
-        let _ = window.set_focus();
+    bring_to_front(app, "whatsapp-web-2");
+}
+
+/// Muestra y enfoca una ventana. El orden `always_on_top(true)` → `show` →
+/// `focus` → (150 ms después) `always_on_top(false)` hace falta en WMs que
+/// ignoran `set_focus()` si la ventana no es top-level un instante.
+fn bring_to_front(app: &AppHandle, label: &str) -> bool {
+    let Some(window) = app.get_webview_window(label) else { return false };
+    let _ = window.unminimize();
+    let _ = window.set_always_on_top(true);
+    let _ = window.show();
+    let _ = window.set_focus();
+    std::thread::spawn(move || {
+        std::thread::sleep(std::time::Duration::from_millis(GTK_WINDOW_RESTORE_DELAY_MS));
         let _ = window.set_always_on_top(false);
-    }
+    });
+    true
 }
 
 pub(crate) fn create_whatsapp_window(app: &AppHandle) -> tauri::Result<()> {

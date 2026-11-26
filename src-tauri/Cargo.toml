@@ -25,6 +25,8 @@ tauri-plugin-global-shortcut = "2"
 serde = { version = "1", features = ["derive"] }
 base64 = "0.22"
 mime_guess = "2"
+# Hora local en los logs (ya venía como dependencia transitiva)
+chrono = { version = "0.4", default-features = false, features = ["clock"] }
 
 # rfd y tauri-plugin-dialog tienen features exclusivos de cada plataforma,
 # así que van en sus respectivas secciones target.
